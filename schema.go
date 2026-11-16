@@ -11,8 +11,6 @@ var schemaStatements []string
 // from its init, so a table lives next to the code that uses it. Every
 // statement must be idempotent: ensureSchema runs all of them again whenever
 // any one changes.
-//
-//nolint:unused // the areas register their tables after the skeleton
 func registerSchema(stmts ...string) {
 	schemaStatements = append(schemaStatements, stmts...)
 }

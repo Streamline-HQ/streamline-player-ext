@@ -9,7 +9,6 @@ import (
 	"github.com/streamline-hq/streamline-player-ext/envelope"
 )
 
-//nolint:unused // the areas that read the clock arrive after the skeleton
 var now = time.Now
 
 func jsonResponse(status int, body []byte) sdk.Response {
@@ -23,7 +22,6 @@ func jsonResponse(status int, body []byte) sdk.Response {
 	}
 }
 
-//nolint:unused // the first handlers arrive after the skeleton
 func jsonOK(status int, v any) sdk.Response {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -44,7 +42,7 @@ func fail(status int, code, message string, extra ...any) sdk.Response {
 // decodeBody reads the JSON body into v. The caller answers a failure with
 // 400 invalid_request.
 //
-//nolint:unused // the first handlers arrive after the skeleton
+//nolint:unused // the first handlers that take a body arrive after the skeleton
 func decodeBody(c *call, v any) error {
 	return json.Unmarshal(c.R.Body, v)
 }

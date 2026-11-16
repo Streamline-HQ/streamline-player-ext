@@ -1,24 +1,22 @@
 package main
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/datahearth/streamline/extensions/sdk"
+	"github.com/streamline-hq/streamline-player-ext/access"
 	routetable "github.com/streamline-hq/streamline-player-ext/route"
 )
 
-// Access says which credential a route takes. A route declares it when it is
-// registered, so a route nobody declared for a device key is never served to
-// one.
-type Access uint8
+// Access says which credential a route takes; see package access.
+type Access = access.Level
 
 const (
-	Public Access = iota
-	Any
-	BearerOnly
-	DeviceOnly
-	Admin
+	Public     = access.Public
+	Any        = access.Any
+	BearerOnly = access.BearerOnly
+	DeviceOnly = access.DeviceOnly
+	Admin      = access.Admin
 )
 
 type call struct {
@@ -38,6 +36,7 @@ type Device struct {
 	Kind           string
 	UserID         uint32
 	Name, Platform string
+	LastSeen       int64
 }
 
 type routed struct {
@@ -49,8 +48,6 @@ var routes routetable.Table[routed]
 
 // handleRoute registers h for method and pattern, a path with {name} segments.
 // The areas call it from their init.
-//
-//nolint:unused // the areas register their routes after the skeleton
 func handleRoute(
 	method, pattern string,
 	access Access,
@@ -73,18 +70,9 @@ func serve(r sdk.Request) sdk.Response {
 	}
 	c := &call{R: r, Params: params}
 	if entry.access != Public {
-		user, device, err := authenticate(r, entry.access)
-		if err != nil {
-			return fail(http.StatusUnauthorized, "unauthorized", "Sign in required")
+		if refused := authenticate(c, entry.access); refused != nil {
+			return *refused
 		}
-		c.User, c.Device = user, device
 	}
 	return entry.h(c)
-}
-
-var errUnauthenticated = errors.New("not authenticated")
-
-// authenticate refuses every credential until the credentials area replaces it.
-func authenticate(_ sdk.Request, _ Access) (*User, *Device, error) {
-	return nil, nil, errUnauthenticated
 }
