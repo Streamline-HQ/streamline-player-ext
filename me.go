@@ -55,7 +55,17 @@ func getMe(c *call) sdk.Response {
 		"picture":          hasPicture,
 		"initials":         initials(c.User),
 		"streamline_url":   c.R.Origin,
+		"player_url":       playerURL(),
 	})
+}
+
+// playerURL is the web player's address, where an app sends a person to
+// approve a TV, or nil until an admin sets player.url.
+func playerURL() any {
+	if u, ok := setting[string]("player.url"); ok && u != "" {
+		return u
+	}
+	return nil
 }
 
 // initials is the first letters of the first and last word of the name, in

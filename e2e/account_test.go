@@ -93,6 +93,28 @@ var _ = Describe("account", Label("e2e"), Ordered, func() {
 		Expect(me.StreamlineURL).To(Equal(stack.BaseURL))
 	})
 
+	It("names the web player in Me once an admin sets player.url", func() {
+		var me struct {
+			PlayerURL *string `json:"player_url"`
+		}
+		setPlayerURL := func(u string) {
+			status, raw := call(
+				http.MethodPatch, "/admin/settings", key(stack.AdminKey),
+				map[string]any{"player.url": u},
+			)
+			Expect(status).To(Equal(http.StatusOK), string(raw))
+		}
+		setPlayerURL("")
+		getJSON("/me", key(apiKey), &me)
+		Expect(me.PlayerURL).To(BeNil())
+
+		setPlayerURL("https://watch.example.net")
+		DeferCleanup(setPlayerURL, "")
+		me.PlayerURL = nil
+		getJSON("/me", key(apiKey), &me)
+		Expect(me.PlayerURL).To(HaveValue(Equal("https://watch.example.net")))
+	})
+
 	It("round-trips a picture, and refuses a 3 MiB body and a GIF", func() {
 		h := key(apiKey)
 		h["Content-Type"] = "image/png"
