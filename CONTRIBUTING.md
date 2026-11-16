@@ -25,6 +25,8 @@ with the asks this extension needs. The end-to-end suite also needs a
 Streamline binary, the engine (from
 [streamline-player](https://github.com/Streamline-HQ/streamline-player)), and
 `ffmpeg` and `ffprobe` on `PATH`.
+Nix users get Go (at exactly the `go.mod` version), Task, ffmpeg and the formatters
+from the flake devshell (`nix develop`, or direnv).
 
 ```bash
 git clone https://github.com/DataHearth/streamline.git
