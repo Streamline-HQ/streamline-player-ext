@@ -1,0 +1,350 @@
+package e2e
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/streamline-hq/streamline-player-ext/e2e/harness"
+	"github.com/streamline-hq/streamline-player-ext/scan"
+)
+
+type adminLibrary struct {
+	Folders []struct {
+		ID    string `json:"id"`
+		Kind  string `json:"kind"`
+		Count int    `json:"count"`
+		Size  int64  `json:"size"`
+		Scan  *struct {
+			Progress float64 `json:"progress"`
+		} `json:"scan"`
+	} `json:"folders"`
+	LastScan *struct {
+		At       string `json:"at"`
+		Added    int    `json:"added"`
+		Replaced int    `json:"replaced"`
+		Errors   int    `json:"errors"`
+	} `json:"last_scan"`
+}
+
+func (l adminLibrary) scanning() bool {
+	for _, f := range l.Folders {
+		if f.Scan != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func startScan(body any) {
+	status, raw := call(
+		http.MethodPost, "/admin/library/scan", key(stack.AdminKey), body,
+	)
+	ExpectWithOffset(1, status).To(Equal(http.StatusAccepted), string(raw))
+}
+
+func waitScanned() adminLibrary {
+	var lib adminLibrary
+	EventuallyWithOffset(1, func() bool {
+		lib = adminLibrary{}
+		getJSON("/admin/library", key(stack.AdminKey), &lib)
+		return !lib.scanning() && lib.LastScan != nil
+	}, 6*time.Minute, time.Second).Should(BeTrue(), scanDump)
+	return lib
+}
+
+func scanDump() string {
+	db := stack.Ext()
+	defer db.Close()
+	out := ""
+	for _, q := range []string{
+		`SELECT cursor || ' ' || scope || ' ' || ifnull(finished_at, 'open') ||
+			' errors ' || errors || ' added ' || added || ' replaced ' || replaced || ' last ' || last_added || '/' || last_replaced FROM scan_state`,
+		`SELECT kind || ' ' || state || ' ' || path FROM jobs`,
+		`SELECT video_file_id || ' ' || size || ' ' || mtime_ns || ' ' ||
+			ifnull(gone_at, '-') || ' ' || path FROM seen`,
+	} {
+		rows, err := db.Query(q)
+		if err != nil {
+			return err.Error()
+		}
+		for rows.Next() {
+			var line string
+			_ = rows.Scan(&line)
+			out += line + "\n"
+		}
+		rows.Close()
+	}
+	req, _ := http.NewRequest(http.MethodGet, stack.EngineURL+"/v1/jobs", nil)
+	req.Header.Set("Authorization", "Bearer "+stack.EngineSecret)
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		out += "engine: " + string(raw) + "\n"
+	}
+	return out
+}
+
+func engineJob(id string) (int, string) {
+	req, err := http.NewRequest(
+		http.MethodGet, stack.EngineURL+"/v1/jobs/"+id, nil,
+	)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	req.Header.Set("Authorization", "Bearer "+stack.EngineSecret)
+	resp, err := http.DefaultClient.Do(req)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	var st struct {
+		State string `json:"state"`
+	}
+	_ = json.Unmarshal(raw, &st)
+	return resp.StatusCode, st.State
+}
+
+func jobIDOf(kind, path string) string {
+	info, err := os.Stat(path)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return scan.JobID(kind, path, info.Size(), info.ModTime().UnixNano())
+}
+
+func storedAnalyses() map[string]int {
+	db := stack.Ext()
+	defer db.Close()
+	rows, err := db.Query(`SELECT path, version FROM analysis`)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var p string
+		var v int
+		ExpectWithOffset(1, rows.Scan(&p, &v)).To(Succeed())
+		out[p] = v
+	}
+	return out
+}
+
+func restoreFile(f harness.SeededFile) {
+	var current string
+	ExpectWithOffset(1, stack.Core.QueryRow(
+		`SELECT path FROM media_files WHERE id = ?`, f.FileID,
+	).Scan(&current)).To(Succeed())
+	if current == f.Path {
+		return
+	}
+	ExpectWithOffset(1, os.Rename(current, f.Path)).To(Succeed())
+	_, err := stack.Core.Exec(
+		`UPDATE media_files SET path = ? WHERE id = ?`, f.Path, f.FileID,
+	)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+}
+
+var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
+	It("is 404 from a client on the hook route", func() {
+		status, _ := call(http.MethodPost, "/hooks/library", nil, map[string]any{
+			"full": []string{"movies"},
+		})
+		Expect(status).To(Equal(http.StatusNotFound))
+	})
+
+	It("takes a scan from an admin only, and 404s an unknown folder", func() {
+		user := stack.NewUser("scanner")
+		k := stack.SignInApp(user, "scan-app")
+		status, _ := call(http.MethodPost, "/admin/library/scan", key(k), nil)
+		Expect(status).To(Equal(http.StatusForbidden))
+		status, raw := call(
+			http.MethodPost, "/admin/library/scan", key(stack.AdminKey),
+			map[string]string{"folder_id": "music"},
+		)
+		Expect(status).To(Equal(http.StatusNotFound), string(raw))
+	})
+
+	It("queues analyze, subtitles and trickplay, and keeps the analysis", func() {
+		startScan(map[string]string{})
+		lib := waitScanned()
+		Expect(lib.Folders).To(HaveLen(2))
+
+		analyses := storedAnalyses()
+		for _, f := range append(
+			append([]harness.SeededFile{}, stack.Seeded.Movies...),
+			stack.Seeded.Episodes...,
+		) {
+			Expect(analyses).To(HaveKey(f.Path))
+			for _, kind := range []string{"subtitles", "trickplay"} {
+				status, state := engineJob(jobIDOf(kind, f.Path))
+				Expect(status).To(Equal(http.StatusOK), kind+" "+f.Path)
+				Expect(state).To(Equal("done"))
+			}
+			status, _ := engineJob(jobIDOf("analyze", f.Path))
+			Expect(status).To(Equal(http.StatusNotFound), "collected and released")
+		}
+	})
+
+	It("serves the stored analysis and markers through tracks", func() {
+		k := stack.SignInApp(stack.NewUser("tracks"), "tracks-app")
+		episode := stack.Seeded.Episodes[0]
+		extExec(`DELETE FROM markers WHERE media_id = ?`, episode.FileID)
+		extExec(
+			`INSERT INTO markers(media_id, season_key, intro_start, intro_end)
+			VALUES(?, 'season:e2e', 3, 7.5)`, episode.FileID,
+		)
+		DeferCleanup(extExec, `DELETE FROM markers WHERE season_key = 'season:e2e'`)
+		var tracks struct {
+			Markers struct {
+				Intro   *[2]float64 `json:"intro"`
+				Credits *[2]float64 `json:"credits"`
+			} `json:"markers"`
+		}
+		getJSON(
+			"/playback/media/"+strconv.FormatInt(episode.FileID, 10)+"/tracks",
+			key(k), &tracks,
+		)
+		Expect(tracks.Markers.Intro).NotTo(BeNil())
+		Expect(*tracks.Markers.Intro).To(Equal([2]float64{3, 7.5}))
+		Expect(tracks.Markers.Credits).To(BeNil())
+
+		film := stack.Seeded.Movies[0]
+		getJSON(
+			"/playback/media/"+strconv.FormatInt(film.FileID, 10)+"/tracks",
+			key(k), &tracks,
+		)
+		status, _ := engineJob(jobIDOf("analyze", film.Path))
+		Expect(
+			status,
+		).To(Equal(http.StatusNotFound), "no analysis was asked for again")
+	})
+
+	It("leaves a running comparison to the request that holds it", func() {
+		scope := `{"full":["movies"]}`
+		extExec(
+			`INSERT INTO scan_state(id, cursor, scope, started_at, finished_at)
+			VALUES(1, 5, ?, ?, NULL) ON CONFLICT(id) DO UPDATE SET cursor = 5,
+				scope = excluded.scope, started_at = excluded.started_at,
+				finished_at = NULL`,
+			scope, time.Now().Unix(),
+		)
+		extExec(
+			`INSERT INTO meta(key, value) VALUES('scan_lease', ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10),
+		)
+		DeferCleanup(func() {
+			extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
+			waitScanned()
+		})
+		cursor := func() (int64, string, bool) {
+			db := stack.Ext()
+			defer db.Close()
+			var c int64
+			var sc string
+			var finished bool
+			ExpectWithOffset(1, db.QueryRow(
+				`SELECT cursor, scope, finished_at IS NOT NULL FROM scan_state`,
+			).Scan(&c, &sc, &finished)).To(Succeed())
+			return c, sc, finished
+		}
+
+		var lib adminLibrary
+		getJSON("/admin/library", key(stack.AdminKey), &lib)
+		c, _, finished := cursor()
+		Expect(c).To(BeEquivalentTo(5))
+		Expect(finished).To(BeFalse())
+
+		startScan(map[string]string{"folder_id": "movies"})
+		c, _, finished = cursor()
+		Expect(c).To(BeEquivalentTo(5), "a folder already scanning is left alone")
+		Expect(finished).To(BeFalse())
+
+		startScan(map[string]string{"folder_id": "series"})
+		c, sc, _ := cursor()
+		Expect(c).To(BeZero())
+		Expect(sc).To(ContainSubstring("series"))
+		Expect(sc).To(ContainSubstring("movies"))
+	})
+
+	It("drops what an analyze job for older bytes found", func() {
+		film := stack.Seeded.Movies[0]
+		var kept int
+		db := stack.Ext()
+		Expect(db.QueryRow(
+			`SELECT version FROM analysis WHERE path = ?`, film.Path,
+		).Scan(&kept)).To(Succeed())
+		Expect(db.Close()).To(Succeed())
+		extExec(`UPDATE analysis SET version = -1 WHERE path = ?`, film.Path)
+		DeferCleanup(
+			extExec,
+			`UPDATE analysis SET version = ? WHERE path = ?`,
+			kept,
+			film.Path,
+		)
+
+		old := fmt.Sprintf("%x", sha256.Sum256([]byte("older bytes")))[:32]
+		body, err := json.Marshal([]map[string]any{{
+			"job_id": old, "type": "analyze", "priority": "interactive",
+			"path": film.Path,
+		}})
+		Expect(err).NotTo(HaveOccurred())
+		req, err := http.NewRequest(
+			http.MethodPost, stack.EngineURL+"/v1/jobs", bytes.NewReader(body),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Authorization", "Bearer "+stack.EngineSecret)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
+		extExec(
+			`INSERT INTO jobs(job_id, kind, path, state) VALUES(?, 'analyze', ?, 'queued')`,
+			old,
+			film.Path,
+		)
+		Eventually(func() string {
+			_, state := engineJob(old)
+			return state
+		}, time.Minute, 250*time.Millisecond).Should(Equal("done"))
+
+		Eventually(func() int {
+			getJSON("/admin/library", key(stack.AdminKey), &adminLibrary{})
+			status, _ := engineJob(old)
+			return status
+		}, 30*time.Second, 500*time.Millisecond).Should(Equal(http.StatusNotFound))
+		Expect(storedAnalyses()).To(HaveKeyWithValue(film.Path, -1))
+	})
+
+	It("queues a replacement and drops the old analysis", func() {
+		old := stack.Seeded.Movies[len(stack.Seeded.Movies)-1]
+		DeferCleanup(restoreFile, old)
+		raw, err := os.ReadFile(old.Path)
+		Expect(err).NotTo(HaveOccurred())
+		fresh := filepath.Join(filepath.Dir(old.Path), "replacement.mkv")
+		Expect(os.WriteFile(fresh, raw, 0o644)).To(Succeed())
+		Expect(os.Remove(old.Path)).To(Succeed())
+		_, err = stack.Core.Exec(
+			`UPDATE media_files SET path = ?, size = ? WHERE id = ?`,
+			fresh, int64(len(raw)), old.FileID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		startScan(map[string]string{"folder_id": "movies"})
+		lib := waitScanned()
+		Expect(lib.LastScan.Replaced).To(Equal(1), scanDump)
+
+		analyses := storedAnalyses()
+		Expect(analyses).NotTo(HaveKey(old.Path))
+		Expect(analyses).To(HaveKey(fresh))
+		status, state := engineJob(jobIDOf("subtitles", fresh))
+		Expect(status).To(Equal(http.StatusOK))
+		Expect(state).To(Equal("done"))
+	})
+})

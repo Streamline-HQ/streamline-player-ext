@@ -22,7 +22,6 @@ func jsonResponse(status int, body []byte) sdk.Response {
 	}
 }
 
-//nolint:unparam // no handler answers with another success status yet
 func jsonOK(status int, v any) sdk.Response {
 	body, err := json.Marshal(v)
 	if err != nil {
