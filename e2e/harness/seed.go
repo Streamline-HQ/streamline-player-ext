@@ -74,7 +74,7 @@ func (s *Stack) seed(lib Library, artDir string) error {
 		_, err = s.Core.Exec(
 			`INSERT INTO credits(create_time, update_time, character, "order",
 				job, department, person_credits, `+column+`)
-			VALUES(?, ?, ?, ?, 'Actor', 'Acting', ?, ?)`,
+			VALUES(?, ?, ?, ?, '', 'Acting', ?, ?)`,
 			now, now, c.Character, order, pid, owner)
 		return err
 	}
