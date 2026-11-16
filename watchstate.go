@@ -82,11 +82,25 @@ func putWatchState(c *call) sdk.Response {
 		return fail(http.StatusNotFound, "not_found", "No such media")
 	}
 	var body struct {
-		Watched *bool `json:"watched"`
+		Watched  *bool  `json:"watched"`
+		Position *int64 `json:"position_seconds"`
+		Duration *int64 `json:"duration_seconds"`
+		At       string `json:"at"`
 	}
-	if err := decodeBody(c, &body); err != nil || body.Watched == nil {
-		return fail(http.StatusBadRequest, "invalid_request",
-			"The body must carry watched")
+	invalid := fail(http.StatusBadRequest, "invalid_request",
+		"The body must carry watched, or position_seconds, duration_seconds and at")
+	if err := decodeBody(c, &body); err != nil {
+		return invalid
+	}
+	offline := body.Watched == nil
+	var at time.Time
+	if offline {
+		var ok bool
+		at, ok = parseOfflineTime(body.At)
+		if body.Position == nil || body.Duration == nil || !ok ||
+			*body.Position < 0 || *body.Duration < 0 {
+			return invalid
+		}
 	}
 	known, err := query(
 		`SELECT 1 FROM streamline_video_files WHERE id = ?`, mediaID,
@@ -97,15 +111,20 @@ func putWatchState(c *call) sdk.Response {
 	if len(known.Rows) == 0 {
 		return fail(http.StatusNotFound, "not_found", "No such media")
 	}
-	if err := exec(
-		`INSERT INTO watch(user_id, media_id, position, duration, watched,
-			updated_at)
-		VALUES(?, ?, 0, 0, ?, ?)
-		ON CONFLICT(user_id, media_id) DO UPDATE SET
-			position = 0, duration = 0, watched = excluded.watched,
-			updated_at = excluded.updated_at`,
-		c.User.ID, mediaID, *body.Watched, now().UnixMilli(),
-	); err != nil {
+	if offline {
+		err = applyOffline(c.User.ID, mediaID, *body.Position, *body.Duration, at)
+	} else {
+		err = exec(
+			`INSERT INTO watch(user_id, media_id, position, duration, watched,
+				updated_at)
+			VALUES(?, ?, 0, 0, ?, ?)
+			ON CONFLICT(user_id, media_id) DO UPDATE SET
+				position = 0, duration = 0, watched = excluded.watched,
+				updated_at = excluded.updated_at`,
+			c.User.ID, mediaID, *body.Watched, now().UnixMilli(),
+		)
+	}
+	if err != nil {
 		return internalError("saving watch state", err)
 	}
 	res, err := query(
@@ -119,4 +138,35 @@ func putWatchState(c *call) sdk.Response {
 		return fail(http.StatusNotFound, "not_found", "No such media")
 	}
 	return jsonOK(http.StatusOK, watchItem(res.Rows[0]))
+}
+
+var offlineLayouts = []string{time.RFC3339Nano, "2006-01-02T15:04:05"}
+
+func parseOfflineTime(s string) (time.Time, bool) {
+	for _, layout := range offlineLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// applyOffline keeps what a desktop app watched from a download only when it
+// is newer than what the server holds.
+func applyOffline(
+	userID uint32,
+	mediaID, position, duration int64,
+	at time.Time,
+) error {
+	return exec(
+		`INSERT INTO watch(user_id, media_id, position, duration, watched,
+			updated_at) VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, media_id) DO UPDATE SET
+			position = excluded.position, duration = excluded.duration,
+			watched = excluded.watched, updated_at = excluded.updated_at
+		WHERE excluded.updated_at > watch.updated_at`,
+		userID, mediaID, position, duration,
+		duration > 0 && float64(position) >= watchedAt*float64(duration),
+		at.UnixMilli(),
+	)
 }
