@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -265,6 +266,36 @@ func (s *Stack) bootEngine(port int, ffmpegDir string) error {
 		return fmt.Errorf("pointing the extension at the engine: %d %s", status, raw)
 	}
 	return s.startEngine(port, ffmpegDir)
+}
+
+// RestartEngine starts the engine again once it has exited on an admin's
+// restart, as the supervisor of a real deployment does.
+func (s *Stack) RestartEngine() error {
+	u, err := url.Parse(s.EngineURL)
+	if err != nil {
+		return err
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return err
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return err
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		resp, err := getWithBearer(s.EngineURL+"/v1/health", s.EngineSecret)
+		if err != nil {
+			break
+		}
+		resp.Body.Close()
+		if time.Now().After(deadline) {
+			return errors.New("the engine did not exit on restart")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return s.startEngine(port, filepath.Dir(ffmpeg))
 }
 
 // FreezeEngine stops the engine process without closing its socket, so calls
