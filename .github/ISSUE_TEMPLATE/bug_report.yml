@@ -1,0 +1,44 @@
+name: Bug report
+description: Something is broken
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "The commit you built and `streamline --version`."
+      placeholder: 9bae243 on Streamline 3.3.0
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: App and engine
+      description: Which app (Android TV, desktop, web) and the engine image tag or commit.
+      placeholder: Android TV app at 7477b96, engine sha-7477b96
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Streamline's log around the request (ideally with `log.app.level: debug`) and the engine's. Redact device keys, tokens and the engine secret.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: >
+        The request involved, screenshots, the player and engine settings that matter.
