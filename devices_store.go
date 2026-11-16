@@ -7,7 +7,6 @@ import (
 	"github.com/streamline-hq/streamline-player-ext/tokens"
 )
 
-//nolint:unused // sign-in, in the next task, is the first caller
 const (
 	kindApp     = "app"
 	kindBrowser = "browser"
@@ -61,15 +60,11 @@ type Tokens struct {
 
 // onRevoke runs for every device revokeDevice removes, so the areas that tie
 // state to a device (playback sessions) can drop it.
-//
-//nolint:unused // the playback area registers its hook later
 var onRevoke []func(deviceID int64) error
 
 // createAppDevice makes the device key of a native app and returns it, the
 // only time it exists in the clear. Any older key of the same app for the same
 // account is revoked.
-//
-//nolint:unused // sign-in arrives in the next task
 func createAppDevice(
 	userID uint32,
 	clientID, name, platform string,
@@ -101,8 +96,6 @@ func createAppDevice(
 }
 
 // createBrowser registers a browser; issueBrowserTokens gives it tokens.
-//
-//nolint:unused // sign-in arrives in the next task
 func createBrowser(userID uint32, name string) (*Device, error) {
 	out, err := run(
 		`INSERT INTO devices(user_id, kind, name, created_at) VALUES(?, ?, ?, ?)`,
@@ -117,11 +110,17 @@ func createBrowser(userID uint32, name string) (*Device, error) {
 }
 
 // issueBrowserTokens makes a fresh access and refresh pair for a browser.
-//
-//nolint:unused // sign-in arrives in the next task
 func issueBrowserTokens(d *Device) (Tokens, error) {
 	access, refresh := tokens.New(), tokens.New()
 	at := now()
+	for _, table := range []string{"access_tokens", "refresh_tokens"} {
+		if err := exec(
+			`DELETE FROM `+table+` WHERE device_id = ? AND expires_at < ?`,
+			d.ID, at.Unix(),
+		); err != nil {
+			return Tokens{}, err
+		}
+	}
 	if _, err := run(
 		`INSERT INTO access_tokens(hash, device_id, expires_at) VALUES(?, ?, ?)`,
 		tokens.Hash(access), d.ID, at.Add(accessTTL).Unix(),
@@ -146,8 +145,6 @@ func issueBrowserTokens(d *Device) (Tokens, error) {
 
 // revokeDevice removes a device: its key, or every token of a browser. What
 // is tied to it elsewhere goes through onRevoke.
-//
-//nolint:unused // sign-in and device management arrive in later tasks
 func revokeDevice(id int64) error {
 	for _, stmt := range []string{
 		`DELETE FROM access_tokens WHERE device_id = ?`,

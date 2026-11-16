@@ -88,6 +88,9 @@ type Stack struct {
 	procs   []*proc
 	counter int
 	closed  bool
+	// sessions caches each user's Streamline session, since the login
+	// endpoint allows only a few attempts per address.
+	sessions map[string]string
 }
 
 type proc struct {
@@ -418,7 +421,7 @@ func (s *Stack) writeConfig(
 	port, enginePort int,
 	wasm, ffmpegDir string,
 ) error {
-	hosts := []string{}
+	hosts := []string{fmt.Sprintf("127.0.0.1:%d", port)}
 	if enginePort != 0 {
 		hosts = append(hosts, fmt.Sprintf("127.0.0.1:%d", enginePort))
 	}

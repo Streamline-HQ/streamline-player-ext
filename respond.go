@@ -22,6 +22,7 @@ func jsonResponse(status int, body []byte) sdk.Response {
 	}
 }
 
+//nolint:unparam // no handler answers with another success status yet
 func jsonOK(status int, v any) sdk.Response {
 	body, err := json.Marshal(v)
 	if err != nil {
@@ -41,8 +42,6 @@ func fail(status int, code, message string, extra ...any) sdk.Response {
 
 // decodeBody reads the JSON body into v. The caller answers a failure with
 // 400 invalid_request.
-//
-//nolint:unused // the first handlers that take a body arrive after the skeleton
 func decodeBody(c *call, v any) error {
 	return json.Unmarshal(c.R.Body, v)
 }
