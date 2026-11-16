@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -193,4 +194,38 @@ func (s *Stack) SetSetting(key string, value any) {
 	); err != nil {
 		panic(fmt.Errorf("harness: %w", err))
 	}
+}
+
+// Call sends one request to the extension with the given headers; a non-nil
+// body is sent as JSON.
+func (s *Stack) Call(
+	method, path string,
+	headers map[string]string,
+	body any,
+) (status int, raw []byte, err error) {
+	var payload io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, err
+		}
+		payload = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, s.BaseURL+MountBase+path, payload)
+	if err != nil {
+		return 0, nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, err = io.ReadAll(resp.Body)
+	return resp.StatusCode, raw, err
 }
