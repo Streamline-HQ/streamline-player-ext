@@ -1,10 +1,20 @@
 # streamline-player-ext
 
-The `player` extension for [Streamline](https://github.com/DataHearth/streamline): the server behind every Streamline player app (TV, desktop, web). It is a WebAssembly module the server loads, served at `/extensions/player`. It answers the player API, drives the streaming engine over HTTP and keeps its own state (devices, tokens, playback sessions, watch state, activity, downloads) in its own database; it reads the library through the views Streamline grants it.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+
+Player extension for [Streamline](https://github.com/DataHearth/streamline), as a WebAssembly extension: the API behind the [Streamline Player](https://github.com/Streamline-HQ/streamline-player) apps, with devices, TV pairing, playback sessions, watch state and downloads, driving the streaming engine. Streamline loads it and serves it at `/extensions/player`.
+
+## Features
+
+- The player API every Streamline Player app talks to (TV, desktop, web)
+- Sign-in through Streamline's own page (authorization code + PKCE), and device pairing for TVs
+- Devices, tokens, playback sessions, watch state, activity and downloads, kept in its own database
+- Drives the streaming engine over HTTP: it picks copy or transcode from what each device can play
+- Reads the library (movies, series, people) through the views Streamline grants it
 
 ## Install
 
-In Streamline, Settings → Extensions → Add: give it `player.wasm` and its SHA-256, then review what it asks for.
+There is no release yet: build `player.wasm` (see [Development](#development)). In Streamline, Settings → Extensions → Add: give it `player.wasm` and its SHA-256, then review what it asks for.
 
 ### What to grant
 
@@ -37,7 +47,12 @@ extensions:
 
 Until step 5 is done the API answers playback requests with `503 engine_unavailable`; browsing, accounts and admin pages keep working.
 
-## Build
+## Documentation
+
+- [Player API contract](https://github.com/Streamline-HQ/streamline-player/blob/main/docs/contract/player.openapi.yaml), owned by the player repository
+- [Extensions](https://github.com/DataHearth/streamline/wiki/Extensions) on the Streamline wiki: how extensions are added and approved
+
+## Development
 
 ```sh
 task build        # player.wasm
@@ -50,6 +65,24 @@ The e2e suite needs `ffmpeg` and `ffprobe` on `PATH`. The SDK is `github.com/dat
 
 `go run ./e2e/cmd/stack --library <json>` boots Streamline, the extension and the engine on a seeded library and prints one JSON line with the addresses and the admin login.
 
+## Contributing
+
+Bug reports and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+the build/test loop, conventions and the policy on AI-assisted PRs. Participation
+is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Found a vulnerability? Don't open an issue — see [SECURITY.md](SECURITY.md).
+
+## Streamline repositories
+
+| Repository | What it is |
+| --- | --- |
+| [streamline](https://github.com/DataHearth/streamline) | The server: media manager, web UI and extension host |
+| [streamline-player](https://github.com/Streamline-HQ/streamline-player) | The player apps (Android TV, desktop, web) and the HLS streaming engine |
+| [streamline-player-ext](https://github.com/Streamline-HQ/streamline-player-ext) | The `player` extension: the API the player apps talk to |
+| [streamline-opds-ext](https://github.com/Streamline-HQ/streamline-opds-ext) | OPDS 1.2 catalog for e-reader apps |
+| [streamline-subsonic-ext](https://github.com/Streamline-HQ/streamline-subsonic-ext) | Subsonic / OpenSubsonic server for music apps |
+
 ## License
 
-GPL-3.0, see [LICENSE](LICENSE).
+[GPL-3.0](LICENSE)
