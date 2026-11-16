@@ -1,6 +1,10 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/datahearth/streamline/extensions/sdk"
+)
 
 func init() {
 	registerSchema(
@@ -11,14 +15,23 @@ func init() {
 	)
 }
 
-// setting reads the JSON value stored under key into v and reports whether
-// there was one.
-func setting(key string, v any) (bool, error) {
+// setting reads the JSON value stored under key and reports whether there was
+// one that fits T.
+func setting[T any](key string) (T, bool) {
+	var v T
 	res, err := query(`SELECT value FROM settings WHERE key = ?`, key)
-	if err != nil || len(res.Rows) == 0 {
-		return false, err
+	if err != nil {
+		sdk.Log("warn", "reading a setting failed", "key", key, "error", err.Error())
+		return v, false
 	}
-	return true, json.Unmarshal([]byte(row(res.Rows[0]).str(0)), v)
+	if len(res.Rows) == 0 {
+		return v, false
+	}
+	if err := json.Unmarshal([]byte(row(res.Rows[0]).str(0)), &v); err != nil {
+		var zero T
+		return zero, false
+	}
+	return v, true
 }
 
 func putSetting(key string, v any) error {
@@ -34,9 +47,6 @@ func putSetting(key string, v any) error {
 }
 
 func settingStrings(key string) []string {
-	var out []string
-	if _, err := setting(key, &out); err != nil {
-		return nil
-	}
-	return out
+	v, _ := setting[[]string](key)
+	return v
 }

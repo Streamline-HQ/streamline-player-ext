@@ -154,10 +154,18 @@ func (s *Stack) SignInBrowser(u User, origin string) Tokens {
 
 // SignInApp signs u in as the native app clientID and returns its device key.
 func (s *Stack) SignInApp(u User, clientID string) (apiKey string) {
+	k, err := s.signInApp(u, clientID)
+	if err != nil {
+		panic(fmt.Errorf("harness: %w", err))
+	}
+	return k
+}
+
+func (s *Stack) signInApp(u User, clientID string) (string, error) {
 	verifier, challenge := PKCE()
 	code, err := s.code(u, LoopbackRedirect, challenge)
 	if err != nil {
-		panic(fmt.Errorf("harness: %w", err))
+		return "", err
 	}
 	status, raw, err := s.PostToken(map[string]string{
 		"grant_type": "authorization_code", "code": code,
@@ -165,18 +173,18 @@ func (s *Stack) SignInApp(u User, clientID string) (apiKey string) {
 		"client_id": clientID, "name": "Harness app", "platform": "linux",
 	})
 	if err != nil {
-		panic(fmt.Errorf("harness: app token: %w", err))
+		return "", fmt.Errorf("app token: %w", err)
 	}
 	if status != http.StatusOK {
-		panic(fmt.Errorf("harness: app token: %d %s", status, raw))
+		return "", fmt.Errorf("app token: %d %s", status, raw)
 	}
 	var k struct {
 		APIKey string `json:"api_key"`
 	}
 	if err := json.Unmarshal(raw, &k); err != nil {
-		panic(fmt.Errorf("harness: %w", err))
+		return "", err
 	}
-	return k.APIKey
+	return k.APIKey, nil
 }
 
 // SetSetting stores a player setting the way the extension reads it.

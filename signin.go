@@ -135,8 +135,7 @@ func registerURLFor(origin string) string {
 	if origin == "" {
 		return ""
 	}
-	var cached cachedRegister
-	if ok, err := setting(registerCacheKey, &cached); err == nil && ok &&
+	if cached, ok := setting[cachedRegister](registerCacheKey); ok &&
 		cached.Origin == origin &&
 		now().Unix()-cached.At < int64(registerCacheTTL/time.Second) {
 		return cached.URL

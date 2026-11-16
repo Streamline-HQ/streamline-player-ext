@@ -34,8 +34,6 @@ func jsonOK(status int, v any) sdk.Response {
 
 // fail answers in the error envelope; extra is key, value pairs that sit
 // inside "error".
-//
-//nolint:unparam // the first answer with extra fields arrives after the skeleton
 func fail(status int, code, message string, extra ...any) sdk.Response {
 	return jsonResponse(status, envelope.Error(code, message, extra...))
 }

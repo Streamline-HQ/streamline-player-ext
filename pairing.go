@@ -73,8 +73,8 @@ func noPendingPairing() sdk.Response {
 }
 
 func verificationURI(r sdk.Request) string {
-	var base string
-	if _, err := setting("player.url", &base); err != nil || base == "" {
+	base, _ := setting[string]("player.url")
+	if base == "" {
 		base = r.Origin + r.BasePath
 	}
 	return strings.TrimRight(base, "/") + "/pair"

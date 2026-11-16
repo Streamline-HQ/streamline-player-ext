@@ -5,9 +5,7 @@ package harness
 
 import (
 	"bytes"
-	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,9 +68,12 @@ type User struct {
 type Stack struct {
 	BaseURL   string
 	EngineURL string
-	// EngineSecret is the engine's shared secret; empty without an engine.
+	// EngineSecret is the engine's shared secret, as the extension generated
+	// it; empty without an engine.
 	EngineSecret string
-	DataDir      string
+	// AdminKey is a device key of the admin, set when an engine is booted.
+	AdminKey string
+	DataDir  string
 	// Dir is the stack's scratch directory; Close removes it.
 	Dir   string
 	Admin User
@@ -182,11 +183,6 @@ func boot(opts Options) (*Stack, error) {
 	); err != nil {
 		return s, err
 	}
-	if opts.Engine {
-		if err := s.startEngine(enginePort, filepath.Dir(ffmpeg)); err != nil {
-			return s, err
-		}
-	}
 	if err := s.start("streamline", bin, nil, "--config", cfgPath); err != nil {
 		return s, err
 	}
@@ -221,7 +217,53 @@ func boot(opts Options) (*Stack, error) {
 			return s, err
 		}
 	}
+	if opts.Engine {
+		if err := s.bootEngine(enginePort, filepath.Dir(ffmpeg)); err != nil {
+			return s, err
+		}
+	}
 	return s, nil
+}
+
+// bootEngine does what an admin does to connect an engine: generate the
+// secret, point the extension at the engine, write the engine's config with
+// that secret and start it.
+func (s *Stack) bootEngine(port int, ffmpegDir string) error {
+	key, err := s.signInApp(s.Admin, "harness-admin")
+	if err != nil {
+		return err
+	}
+	s.AdminKey = key
+	hdr := map[string]string{"X-API-Key": key}
+	status, raw, err := s.Call(
+		http.MethodPost, "/admin/engine/secret", hdr, nil,
+	)
+	if err != nil {
+		return err
+	}
+	var generated struct {
+		Secret string `json:"secret"`
+	}
+	if status != http.StatusOK || json.Unmarshal(raw, &generated) != nil ||
+		generated.Secret == "" {
+		return fmt.Errorf("generating the engine secret: %d %s", status, raw)
+	}
+	s.EngineSecret = generated.Secret
+	status, raw, err = s.Call(
+		http.MethodPatch,
+		"/admin/settings",
+		hdr,
+		map[string]any{
+			"engine.url": s.EngineURL, "engine.public_url": s.EngineURL,
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("pointing the extension at the engine: %d %s", status, raw)
+	}
+	return s.startEngine(port, ffmpegDir)
 }
 
 // Ext opens the extension's own database. The caller closes it.
@@ -468,11 +510,6 @@ func (s *Stack) startEngine(port int, ffmpegDir string) error {
 	if err != nil {
 		return err
 	}
-	secret := make([]byte, 24)
-	if _, err := rand.Read(secret); err != nil {
-		return err
-	}
-	s.EngineSecret = base64.RawURLEncoding.EncodeToString(secret)
 	cfg := fmt.Sprintf(
 		"listen: 127.0.0.1:%d\nsecret: %s\ntmp_dir: %s\njobs_dir: %s\n"+
 			"ffmpeg_dir: %s\nhw_accel: none\n",
