@@ -1,0 +1,3 @@
+*.wasm
+*.wasm.sha256
+.task/
