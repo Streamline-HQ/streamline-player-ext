@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -264,6 +265,19 @@ func (s *Stack) bootEngine(port int, ffmpegDir string) error {
 		return fmt.Errorf("pointing the extension at the engine: %d %s", status, raw)
 	}
 	return s.startEngine(port, ffmpegDir)
+}
+
+// FreezeEngine stops the engine process without closing its socket, so calls
+// to it connect and then never get an answer, as with a host that is off
+// behind a firewall. The returned func lets it run again.
+func (s *Stack) FreezeEngine() (thaw func()) {
+	for _, p := range slices.Backward(s.procs) {
+		if p.name == "engine" {
+			_ = p.cmd.Process.Signal(syscall.SIGSTOP)
+			return func() { _ = p.cmd.Process.Signal(syscall.SIGCONT) }
+		}
+	}
+	return func() {}
 }
 
 // Ext opens the extension's own database. The caller closes it.

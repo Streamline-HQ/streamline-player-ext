@@ -67,11 +67,11 @@ func route(r sdk.Request) (resp sdk.Response) {
 	case r.Mount == "/authorize":
 		return authorize(r)
 	case r.Mount == "/":
-		sweep()
+		sweep(r)
 	}
 	return serve(r)
 }
 
-// sweep is where a request on the self mount stops the playback sessions that
-// went silent.
-func sweep() {}
+// sweep runs at the start of every request on the self mount; the playback
+// area replaces it from its init to stop the sessions that went silent.
+var sweep = func(sdk.Request) {}

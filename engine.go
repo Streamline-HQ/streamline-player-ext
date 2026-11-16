@@ -25,8 +25,6 @@ func trimmedURL(key string) (string, bool) {
 }
 
 // publicEngineURL is where players reach the engine's /hls and /dl routes.
-//
-//nolint:unused // playback builds its signed URLs on it; drop this with the first caller
 func publicEngineURL() (string, bool) { return trimmedURL(enginePublicURLKey) }
 
 // engineFetch calls the engine's control plane and returns the status and body
