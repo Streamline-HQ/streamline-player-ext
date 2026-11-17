@@ -32,6 +32,10 @@ func getPoster(c *call) sdk.Response {
 	if !known || !posterID.MatchString(id) || !posterFile.MatchString(file) {
 		return libraryNotFound()
 	}
+	// Core files a person's picture as it does a title's.
+	if kind == "people" && file == "photo.jpg" {
+		file = "poster.jpg"
+	}
 	folder, ok := c.R.Folder("artwork")
 	if !ok {
 		return libraryNotFound()

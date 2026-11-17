@@ -306,7 +306,14 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 			Expect(os.WriteFile(
 				filepath.Join(art, "secret.jpg"), []byte("secret"), 0o644,
 			)).To(Succeed())
+			Expect(
+				os.MkdirAll(filepath.Join(art, "people", "3"), 0o755),
+			).To(Succeed())
+			Expect(os.WriteFile(
+				filepath.Join(art, "people", "3", "poster.jpg"),
+				[]byte("face-jpeg"), 0o644)).To(Succeed())
 			DeferCleanup(func() {
+				Expect(os.RemoveAll(filepath.Join(art, "people", "3"))).To(Succeed())
 				Expect(os.RemoveAll(filepath.Join(art, "movies", "1"))).To(Succeed())
 				Expect(
 					os.RemoveAll(filepath.Join(art, "tvshows", "7")),
@@ -321,6 +328,14 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(status).To(Equal(http.StatusOK))
 			Expect(string(raw)).To(Equal("jpeg-bytes"))
+		})
+
+		It("serves a person's photo from the picture core keeps", func() {
+			status, raw, err := stack.Call(
+				http.MethodGet, "/posters/people/3/photo.jpg", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal(http.StatusOK))
+			Expect(string(raw)).To(Equal("face-jpeg"))
 		})
 
 		It("serves a series poster from core's tvshows folder", func() {
