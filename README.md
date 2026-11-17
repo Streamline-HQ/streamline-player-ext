@@ -37,6 +37,30 @@ extensions:
       - streamline.example.net
 ```
 
+### Settings in Streamline's config file
+
+The settings and the engine secret can be written in Streamline's config file, on the extension's entry. That needs no sign-in, so a declarative deployment comes up in one go:
+
+```yaml
+extensions:
+  - name: player
+    # source, sha256, grants and hosts as above
+    settings:
+      engine.url: http://engine.lan:8097
+      engine.public_url: https://engine.example.net
+      player.url: https://watch.example.net
+      player.origins: [https://watch.example.net]
+    secret_files:
+      engine: /etc/streamline/secrets/player-engine-secret
+```
+
+- The keys are the ones `PATCH /admin/settings` takes for the player (`engine.url`, `engine.public_url`, `player.url`, `player.origins`, `player.app_links`, `network.home`). The engine's own settings stay in the engine's config.
+- `secret_files.engine` is the secret shared with the engine. Give the engine the same file (`secret_file:`), so it is generated once and never copied.
+- The file then holds all of the player's settings: one it leaves out is unset, Server settings shows them locked, and a change or a secret rotation answers `409 read_only`.
+- A value the player cannot use, an unknown key, or an `engine.url` whose `host:port` is not in `hosts` keeps the extension from starting, with the reason on Streamline's Extensions page.
+
+The order below is for a deployment that sets them from the app instead.
+
 ### Bootstrap order
 
 1. Add and approve the extension, with the `hosts` entry above.

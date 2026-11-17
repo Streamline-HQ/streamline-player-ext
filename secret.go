@@ -19,9 +19,16 @@ func init() {
 	handleRoute(http.MethodPost, "/admin/engine/secret", Admin, rotateEngineSecret)
 }
 
+// engineSecretName is the name the config file's secret_files gives the
+// secret shared with the engine.
+const engineSecretName = "engine"
+
 // engineSecret is the secret shared with the engine. It is kept readable
 // because it signs the playback URLs.
 func engineSecret() (string, bool) {
+	if s := fileSecrets[engineSecretName]; s != "" {
+		return s, true
+	}
 	res, err := query(`SELECT secret FROM engine_secret WHERE id = 1`)
 	if err != nil {
 		sdk.Log("error", "reading the engine secret failed", "error", err.Error())
@@ -35,6 +42,9 @@ func engineSecret() (string, bool) {
 }
 
 func getEngineSecret(*call) sdk.Response {
+	if fileSecrets[engineSecretName] != "" {
+		return jsonOK(http.StatusOK, map[string]any{"set": true})
+	}
 	res, err := query(`SELECT created_at FROM engine_secret WHERE id = 1`)
 	if err != nil {
 		return internalError("reading the engine secret", err)
@@ -48,8 +58,12 @@ func getEngineSecret(*call) sdk.Response {
 }
 
 // rotateEngineSecret replaces any older secret; the answer is the only time
-// the secret leaves the extension.
+// the secret leaves the extension. A secret from the config file is not the
+// extension's to replace.
 func rotateEngineSecret(*call) sdk.Response {
+	if fileSecrets[engineSecretName] != "" {
+		return readOnlyPlayer()
+	}
 	secret := tokens.New()
 	if err := exec(
 		`INSERT INTO engine_secret(id, secret, created_at) VALUES(1, ?, ?)

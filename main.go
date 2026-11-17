@@ -32,7 +32,7 @@ func manifest() int32 {
 		},
 		Folders:  []string{"movies", "series", "artwork", "cache"},
 		Services: []string{"http"},
-		Hooks:    []string{sdk.HookLibrary},
+		Hooks:    []string{sdk.HookLibrary, sdk.HookSettings},
 	})
 }
 
@@ -61,6 +61,7 @@ func route(r sdk.Request) (resp sdk.Response) {
 		sdk.Log("error", "preparing the database failed", "error", err.Error())
 		return fail(http.StatusInternalServerError, "internal", "Internal error")
 	}
+	fileSettings, fileSecrets = r.Settings, r.Secrets
 	switch {
 	case r.Mount == "" && strings.HasPrefix(r.Path, "/hooks/"):
 		return hooks(r)

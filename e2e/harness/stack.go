@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -53,6 +54,11 @@ type Options struct {
 	Port int
 	// Engine starts the engine named by ENGINE_BIN on the CPU backend.
 	Engine bool
+	// FromFile gives the extension its settings and the engine secret through
+	// Streamline's config file, as a declarative deployment does, and
+	// Settings adds to or replaces what the file then holds.
+	FromFile bool
+	Settings map[string]any
 	// Users are members created after boot, named by their email prefix.
 	Users []string
 	// Log receives the output of the processes; discarded when nil.
@@ -88,6 +94,9 @@ type Stack struct {
 	// Seeded lists what the library file put on disk.
 	Seeded Seeded
 
+	fromFile     bool
+	fileSettings map[string]any
+
 	log     io.Writer
 	procs   []*proc
 	counter int
@@ -105,14 +114,21 @@ type proc struct {
 
 // Boot starts the stack and panics with the reason when it cannot.
 func Boot(opts Options) *Stack {
-	s, err := boot(opts)
+	s, err := TryBoot(opts)
 	if err != nil {
-		if s != nil {
-			s.Close()
-		}
 		panic(fmt.Errorf("harness: %w", err))
 	}
 	return s
+}
+
+// TryBoot is Boot for a stack that may not come up, and cleans up after one
+// that did not.
+func TryBoot(opts Options) (*Stack, error) {
+	s, err := boot(opts)
+	if err != nil && s != nil {
+		s.Close()
+	}
+	return s, err
 }
 
 func boot(opts Options) (*Stack, error) {
@@ -177,6 +193,14 @@ func boot(opts Options) (*Stack, error) {
 	}
 
 	cfgPath := filepath.Join(dir, "config.yaml")
+	if opts.FromFile {
+		s.fromFile = true
+		s.EngineSecret = "e2e-engine-secret-from-a-file"
+		s.fileSettings = map[string]any{
+			"engine.url": s.EngineURL, "engine.public_url": s.EngineURL,
+		}
+		maps.Copy(s.fileSettings, opts.Settings)
+	}
 	if err := s.writeConfig(
 		cfgPath,
 		port,
@@ -237,6 +261,9 @@ func (s *Stack) bootEngine(port int, ffmpegDir string) error {
 		return err
 	}
 	s.AdminKey = key
+	if s.fromFile {
+		return s.startEngine(port, ffmpegDir)
+	}
 	hdr := map[string]string{"X-API-Key": key}
 	status, raw, err := s.Call(
 		http.MethodPost, "/admin/engine/secret", hdr, nil,
@@ -478,47 +505,52 @@ func (s *Stack) approveExtension() error {
 		return err
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("approving the extension: %d %s", status, raw)
+		_, reason, _ := s.extensionState()
+		return fmt.Errorf("approving the extension: %d %s %s", status, raw, reason)
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		state, err := s.extensionState()
+		state, reason, err := s.extensionState()
 		if err != nil {
 			return err
 		}
 		if state == "running" {
 			return s.touchExtension()
 		}
+		if state == "failed" {
+			return fmt.Errorf("the extension failed: %s", reason)
+		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	return errors.New("the extension did not start")
 }
 
-func (s *Stack) extensionState() (string, error) {
+func (s *Stack) extensionState() (state, reason string, err error) {
 	status, raw, err := s.Do(
 		http.MethodGet, "/api/v1/extensions", s.AdminToken, nil,
 	)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("listing extensions: %d %s", status, raw)
+		return "", "", fmt.Errorf("listing extensions: %d %s", status, raw)
 	}
 	var list struct {
 		Items []struct {
-			Name  string `json:"name"`
-			State string `json:"state"`
+			Name   string `json:"name"`
+			State  string `json:"state"`
+			Reason string `json:"reason"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(raw, &list); err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, it := range list.Items {
 		if it.Name == ExtensionName {
-			return it.State, nil
+			return it.State, it.Reason, nil
 		}
 	}
-	return "", errors.New("the extension is not listed")
+	return "", "", errors.New("the extension is not listed")
 }
 
 // touchExtension makes the extension create its tables, which the helpers
@@ -539,6 +571,22 @@ func (s *Stack) writeConfig(
 	hosts := []string{fmt.Sprintf("127.0.0.1:%d", port)}
 	if enginePort != 0 {
 		hosts = append(hosts, fmt.Sprintf("127.0.0.1:%d", enginePort))
+	}
+	entry := map[string]any{
+		"name":    ExtensionName,
+		"source":  wasm,
+		"enabled": true,
+		"hosts":   hosts,
+	}
+	if s.fromFile {
+		secret := filepath.Join(s.Dir, "engine-secret")
+		if err := os.WriteFile(
+			secret, []byte(s.EngineSecret+"\n"), 0o600,
+		); err != nil {
+			return err
+		}
+		entry["settings"] = s.fileSettings
+		entry["secret_files"] = map[string]string{"engine": secret}
 	}
 	cfg := map[string]any{
 		"data_dir": s.DataDir,
@@ -564,12 +612,7 @@ func (s *Stack) writeConfig(
 			"app":  map[string]any{"level": "warn"},
 			"http": map[string]any{"enabled": false},
 		},
-		"extensions": []map[string]any{{
-			"name":    ExtensionName,
-			"source":  wasm,
-			"enabled": true,
-			"hosts":   hosts,
-		}},
+		"extensions": []map[string]any{entry},
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

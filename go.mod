@@ -3,7 +3,7 @@ module github.com/streamline-hq/streamline-player-ext
 go 1.27.4
 
 require (
-	github.com/datahearth/streamline/extensions/sdk v0.0.0-20261117173052-d4ca0b6999ff
+	github.com/datahearth/streamline/extensions/sdk v0.0.0-20261117185451-2168952c0c8e
 	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 )

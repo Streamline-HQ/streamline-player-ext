@@ -43,7 +43,7 @@ func buildSettingsView() settingsView {
 		Owners: map[string]string{},
 		ReadOnly: map[string]bool{
 			settings.OwnerEngine: false,
-			settings.OwnerPlayer: false,
+			settings.OwnerPlayer: playerLocked(),
 		},
 		Pending:     []string{},
 		RestartKeys: []string{},
@@ -119,6 +119,9 @@ func patchSettings(c *call) sdk.Response {
 		} else {
 			playerKeys = append(playerKeys, k)
 		}
+	}
+	if len(playerKeys) > 0 && playerLocked() {
+		return readOnlyPlayer()
 	}
 	if len(engineKeys) > 0 {
 		if refused := patchEngine(patch, engineKeys); refused != nil {
