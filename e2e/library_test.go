@@ -297,11 +297,20 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 			Expect(os.WriteFile(
 				filepath.Join(art, "movies", "1", "poster.jpg"),
 				[]byte("jpeg-bytes"), 0o644)).To(Succeed())
+			Expect(
+				os.MkdirAll(filepath.Join(art, "tvshows", "7"), 0o755),
+			).To(Succeed())
+			Expect(os.WriteFile(
+				filepath.Join(art, "tvshows", "7", "poster.jpg"),
+				[]byte("show-jpeg"), 0o644)).To(Succeed())
 			Expect(os.WriteFile(
 				filepath.Join(art, "secret.jpg"), []byte("secret"), 0o644,
 			)).To(Succeed())
 			DeferCleanup(func() {
 				Expect(os.RemoveAll(filepath.Join(art, "movies", "1"))).To(Succeed())
+				Expect(
+					os.RemoveAll(filepath.Join(art, "tvshows", "7")),
+				).To(Succeed())
 				Expect(os.Remove(filepath.Join(art, "secret.jpg"))).To(Succeed())
 			})
 		})
@@ -312,6 +321,14 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(status).To(Equal(http.StatusOK))
 			Expect(string(raw)).To(Equal("jpeg-bytes"))
+		})
+
+		It("serves a series poster from core's tvshows folder", func() {
+			status, raw, err := stack.Call(
+				http.MethodGet, "/posters/series/7/poster.jpg", nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal(http.StatusOK))
+			Expect(string(raw)).To(Equal("show-jpeg"))
 		})
 
 		It("sets the type and a day's private cache", func() {
@@ -334,6 +351,9 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 					"/posters/movies/2/poster.jpg",
 					"/posters/movies/1/poster.gif",
 					"/posters/albums/1/poster.jpg",
+					"/posters/tvshows/7/poster.jpg",
+					"/posters/seasons/7/poster.jpg",
+					"/posters/episodes/7/poster.jpg",
 					"/posters/movies/1/" + url.PathEscape("../secret.jpg"),
 					"/posters/movies/1/..%2fsecret.jpg",
 					"/posters/movies/..%2f/secret.jpg",

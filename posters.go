@@ -10,9 +10,10 @@ import (
 )
 
 var (
-	posterKinds = map[string]bool{
-		"movies": true, "series": true, "seasons": true, "episodes": true,
-		"people": true,
+	// The contract's kind in the URL, and the folder core keeps that art in:
+	// core files a show's poster under tvshows.
+	posterDirs = map[string]string{
+		"movies": "movies", "series": "tvshows", "people": "people",
 	}
 	posterFile  = regexp.MustCompile(`^[a-z0-9_-]+\.(jpg|png|webp)$`)
 	posterTypes = map[string]string{
@@ -27,15 +28,15 @@ func init() {
 
 func getPoster(c *call) sdk.Response {
 	kind, id, file := c.Params["kind"], c.Params["id"], c.Params["file"]
-	if !posterKinds[kind] || !posterID.MatchString(id) ||
-		!posterFile.MatchString(file) {
+	dir, known := posterDirs[kind]
+	if !known || !posterID.MatchString(id) || !posterFile.MatchString(file) {
 		return libraryNotFound()
 	}
 	folder, ok := c.R.Folder("artwork")
 	if !ok {
 		return libraryNotFound()
 	}
-	hostPath := path.Join(folder.HostPath, kind, id, file)
+	hostPath := path.Join(folder.HostPath, dir, id, file)
 	guest, ok := c.R.GuestPath(hostPath)
 	if !ok {
 		return libraryNotFound()
