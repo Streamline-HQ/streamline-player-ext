@@ -296,6 +296,22 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 			Should(Equal(http.StatusNotFound), "released once stored")
 	})
 
+	It("looks at a movie again when Streamline says it changed", func() {
+		film := stack.Seeded.Movies[0]
+		keepRows("analysis", "path = ?", film.Path)
+		extExec(`DELETE FROM analysis WHERE path = ?`, film.Path)
+		status, raw, err := stack.Do(
+			http.MethodPatch,
+			fmt.Sprintf("/api/v1/movies/%d", film.OwnerID),
+			stack.AdminToken,
+			map[string]any{"monitored": false},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(status).To(Equal(http.StatusOK), string(raw))
+		Eventually(storedAnalyses, time.Minute, 250*time.Millisecond).
+			Should(HaveKey(film.Path), "no player request was made")
+	})
+
 	It("finishes a scan with nobody connected", func() {
 		// Another request holds the comparison for a few seconds, so the scan
 		// request ends with the work still to do.

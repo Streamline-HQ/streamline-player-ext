@@ -32,7 +32,7 @@ func manifest() int32 {
 		},
 		Folders:  []string{"movies", "series", "artwork", "cache"},
 		Services: []string{"http"},
-		// ponytail: add Hooks: []string{"library"} once sdk.Manifest has the field.
+		Hooks:    []string{sdk.HookLibrary},
 	})
 }
 
