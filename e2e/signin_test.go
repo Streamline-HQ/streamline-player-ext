@@ -90,21 +90,55 @@ var _ = Describe("sign-in", Label("e2e"), func() {
 		Expect(bearerStatus(first.AccessToken)).To(Equal(http.StatusOK))
 	})
 
-	It("revokes a browser when a rotated refresh token comes back", func() {
+	It(
+		"revokes a browser when a refresh token traded a while ago comes back",
+		func() {
+			first := stack.SignInBrowser(user, webOrigin)
+			status, raw := refresh(first.RefreshToken)
+			Expect(status).To(Equal(http.StatusOK), string(raw))
+			var second harness.Tokens
+			Expect(json.Unmarshal(raw, &second)).To(Succeed())
+			Expect(bearerStatus(second.AccessToken)).To(Equal(http.StatusOK))
+			extExec(
+				`UPDATE refresh_tokens SET rotated = ? WHERE device_id = ? AND rotated != 0`,
+				time.Now().Add(-time.Minute).Unix(),
+				first.DeviceID,
+			)
+
+			status, raw = refresh(first.RefreshToken)
+			Expect(status).To(Equal(http.StatusBadRequest))
+			Expect(errorCode(raw)).To(Equal("invalid_grant"))
+			Expect(
+				bearerStatus(second.AccessToken),
+			).To(Equal(http.StatusUnauthorized))
+			Expect(
+				bearerStatus(first.AccessToken),
+			).To(Equal(http.StatusUnauthorized))
+			status, _ = refresh(second.RefreshToken)
+			Expect(status).To(Equal(http.StatusBadRequest))
+		},
+	)
+
+	It("trades a refresh token again when the first answer was lost", func() {
 		first := stack.SignInBrowser(user, webOrigin)
 		status, raw := refresh(first.RefreshToken)
 		Expect(status).To(Equal(http.StatusOK), string(raw))
-		var second harness.Tokens
-		Expect(json.Unmarshal(raw, &second)).To(Succeed())
-		Expect(bearerStatus(second.AccessToken)).To(Equal(http.StatusOK))
+		var lost harness.Tokens
+		Expect(json.Unmarshal(raw, &lost)).To(Succeed())
 
 		status, raw = refresh(first.RefreshToken)
+		Expect(status).To(Equal(http.StatusOK), string(raw))
+		var again harness.Tokens
+		Expect(json.Unmarshal(raw, &again)).To(Succeed())
+		Expect(again.DeviceID).To(Equal(first.DeviceID))
+		Expect(again.RefreshToken).NotTo(Equal(lost.RefreshToken))
+		Expect(bearerStatus(again.AccessToken)).To(Equal(http.StatusOK))
+
+		By("revoking the browser when the pair nobody received is used")
+		status, raw = refresh(lost.RefreshToken)
 		Expect(status).To(Equal(http.StatusBadRequest))
 		Expect(errorCode(raw)).To(Equal("invalid_grant"))
-		Expect(bearerStatus(second.AccessToken)).To(Equal(http.StatusUnauthorized))
-		Expect(bearerStatus(first.AccessToken)).To(Equal(http.StatusUnauthorized))
-		status, _ = refresh(second.RefreshToken)
-		Expect(status).To(Equal(http.StatusBadRequest))
+		Expect(bearerStatus(again.AccessToken)).To(Equal(http.StatusUnauthorized))
 	})
 
 	It("refuses an expired or unknown refresh token", func() {

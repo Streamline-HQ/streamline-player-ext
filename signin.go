@@ -276,8 +276,19 @@ func clip(s string) string {
 	return string(r)
 }
 
-// rotateRefresh trades a refresh token for a new pair. A token already traded
-// means two parties hold it, so the browser is revoked.
+// refreshRetryGrace is how long after a trade the same refresh token is taken
+// again. A browser that reloads the page mid-trade never sees the answer and
+// asks again with the token it still has.
+const refreshRetryGrace = 30 * time.Second
+
+// withdrawn stands in the rotated column, which otherwise holds when the
+// token was traded, for a token that is never taken again.
+const withdrawn = 1
+
+// rotateRefresh trades a refresh token for a new pair. A token traded longer
+// ago than the grace means two parties hold it, so the browser is revoked.
+// Within the grace it is traded again and the pair of the first trade is
+// withdrawn: whoever else holds that pair revokes the browser by using it.
 func rotateRefresh(token string) sdk.Response {
 	if token == "" {
 		return invalidGrant()
@@ -295,20 +306,32 @@ func rotateRefresh(token string) sdk.Response {
 	}
 	r := row(res.Rows[0])
 	deviceID := r.int(0)
-	if r.int(2) != 0 {
-		return revokeReplayed(deviceID)
-	}
-	if r.int(1) < now().Unix() {
-		return invalidGrant()
-	}
-	out, err := run(
-		`UPDATE refresh_tokens SET rotated = 1 WHERE hash = ? AND rotated = 0`, hash,
-	)
-	if err != nil {
-		return internalError("rotating a refresh token", err)
-	}
-	if out.RowsAffected != 1 {
-		return revokeReplayed(deviceID)
+	at := now().Unix()
+	if rotatedAt := r.int(2); rotatedAt != 0 {
+		if at-rotatedAt > int64(refreshRetryGrace/time.Second) {
+			return revokeReplayed(deviceID)
+		}
+		if err := exec(
+			`UPDATE refresh_tokens SET rotated = ? WHERE device_id = ? AND rotated = 0`,
+			withdrawn,
+			deviceID,
+		); err != nil {
+			return internalError("withdrawing a refresh token", err)
+		}
+	} else {
+		if r.int(1) < at {
+			return invalidGrant()
+		}
+		out, err := run(
+			`UPDATE refresh_tokens SET rotated = ? WHERE hash = ? AND rotated = 0`,
+			at, hash,
+		)
+		if err != nil {
+			return internalError("rotating a refresh token", err)
+		}
+		if out.RowsAffected != 1 {
+			return revokeReplayed(deviceID)
+		}
 	}
 	t, err := issueBrowserTokens(&Device{ID: deviceID})
 	if err != nil {
