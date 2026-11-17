@@ -66,7 +66,7 @@ func getPerson(c *call) sdk.Response {
 			AND `+withFile+`f.movie_id = m.id)
 		UNION ALL
 		SELECT 'series', s.id, s.title, s.year, c.character,
-			(SELECT count(*) FROM streamline_seasons WHERE series_id = s.id),
+			`+seasonsWithFiles+`,
 			s.rating
 		FROM streamline_credits c JOIN streamline_series s ON s.id = c.series_id
 		WHERE c.person_id = ?1 AND c.job = ''

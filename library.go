@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -90,6 +91,13 @@ const titleFileColumns = `a.cnt, a.size, f.quality, f.height, f.video_codec,
 // A title with no file on disk is not the player's to show: Streamline is
 // still looking for it, and there is nothing to play. The inner joins below
 // leave those out of the lists and make their detail a 404.
+// seasonsWithFiles counts the seasons of series s that have an episode on
+// disk, the only ones the player lists.
+const seasonsWithFiles = `(SELECT count(DISTINCT se.id) FROM streamline_seasons se
+	JOIN streamline_episodes e ON e.season_id = se.id
+	JOIN streamline_video_files vf ON vf.episode_id = e.id AND vf.missing = 0
+	WHERE se.series_id = s.id)`
+
 const movieSelect = `SELECT m.id, m.title, m.original_title, m.year, m.overview,
 	m.runtime, m.rating, m.genres, m.monitored, m.certification, m.added_at,
 	m.tmdb_id, '', '', '', ` + titleFileColumns + `
@@ -104,7 +112,7 @@ LEFT JOIN streamline_video_files f ON f.id = a.first`
 
 const seriesSelect = `SELECT s.id, s.title, s.original_title, s.year, s.overview,
 	s.runtime, s.rating, s.genres, s.monitored, s.certification, s.added_at,
-	(SELECT count(*) FROM streamline_seasons WHERE series_id = s.id),
+	` + seasonsWithFiles + `,
 	s.status, s.network, s.first_aired, ` + titleFileColumns + `
 FROM streamline_series s
 JOIN (
@@ -224,13 +232,17 @@ func seasonsOf(seriesID, runtime int64) ([]season, error) {
 			ID: r.int(1), Number: r.int(2), Title: r.str(3), Overview: r.str(4),
 			Runtime: runtime, AirDate: libDate(r[5]),
 		}
-		if file := r.int(6); file != 0 {
-			ep.HasFile = true
-			ep.MediaFileID = fileIDString(file)
-			ep.Status = "available"
+		// An episode Streamline has no file for is not the player's to show.
+		file := r.int(6)
+		if file == 0 {
+			continue
 		}
+		ep.HasFile = true
+		ep.MediaFileID = fileIDString(file)
+		ep.Status = "available"
 		out[at].Episodes = append(out[at].Episodes, ep)
 	}
+	out = slices.DeleteFunc(out, func(s season) bool { return len(s.Episodes) == 0 })
 	for i := range out {
 		out[i].Total = len(out[i].Episodes)
 	}

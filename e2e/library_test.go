@@ -219,23 +219,23 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 		Expect(severance.Seasons).To(HaveLen(1))
 		s1 := severance.Seasons[0]
 		Expect(s1.Number).To(BeEquivalentTo(1))
-		Expect(s1.Total).To(Equal(3))
-		Expect(s1.Episodes).To(HaveLen(3))
+		Expect(s1.Total).To(Equal(2), "the episode with no file is left out")
+		Expect(s1.Episodes).To(HaveLen(2))
 		Expect(s1.Episodes[0].Title).To(Equal("Good News About Hell"))
 		Expect(s1.Episodes[0].AirDate).To(Equal("2024-01-01"))
 		Expect(s1.Episodes[0].HasFile).To(BeTrue())
 		Expect(s1.Episodes[0].MediaFileID).To(
 			Equal(strconv.FormatInt(stack.Seeded.Episodes[0].FileID, 10)))
-		Expect(s1.Episodes[2].HasFile).To(BeFalse())
-		Expect(s1.Episodes[2].MediaFileID).To(BeEmpty())
+		for _, e := range s1.Episodes {
+			Expect(e.HasFile).To(BeTrue(), e.Title)
+		}
 
 		var two libTitle
 		getLib("/series/"+strconv.FormatInt(twoSeasons, 10), k, &two)
-		Expect(*two.TotalSeasons).To(Equal(2))
-		Expect(two.Seasons).To(HaveLen(2))
-		Expect(two.Seasons[0].Episodes).To(HaveLen(2))
-		Expect(two.Seasons[1].Episodes).To(HaveLen(1))
-		Expect(two.Seasons[1].Number).To(BeEquivalentTo(2))
+		Expect(*two.TotalSeasons).To(Equal(1), "only the season with a file counts")
+		Expect(two.Seasons).To(HaveLen(1))
+		Expect(two.Seasons[0].Number).To(BeEquivalentTo(1))
+		Expect(two.Seasons[0].Episodes).To(HaveLen(1))
 	})
 
 	It("leaves out a title Streamline has no file for", func() {
