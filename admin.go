@@ -170,6 +170,7 @@ type engineSession struct {
 	HW        string `json:"hw"`
 	Video     struct{ Codec string }
 	Audio     struct{ Codec string }
+	Source    struct{ Video, Audio string }
 	Speed     float64 `json:"speed"`
 	Bitrate   int64   `json:"bitrate"`
 }
@@ -284,9 +285,9 @@ func streamItem(r row, info engineSession, caller uint32) map[string]any {
 	case "copy":
 		item["video"], item["audio"] = info.Video.Codec, info.Audio.Codec
 	case "audio":
-		item["to"] = info.Audio.Codec
+		item["from"], item["to"] = info.Source.Audio, info.Audio.Codec
 	default:
-		item["to"] = info.Video.Codec
+		item["from"], item["to"] = info.Source.Video, info.Video.Codec
 		item["hw"] = cmp.Or(info.HW, "software")
 		if info.Speed > 0 {
 			item["speed"] = info.Speed
