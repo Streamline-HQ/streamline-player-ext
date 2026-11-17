@@ -213,6 +213,24 @@ func engineAnalysisVersion() (int, bool) {
 	return h.AnalysisVersion, err == nil && status == http.StatusOK
 }
 
+// engineJobs is the set of jobs the engine is running or has queued.
+func engineJobs() (map[string]bool, bool) {
+	var live struct {
+		Jobs []struct {
+			ID string `json:"job_id"`
+		} `json:"jobs"`
+	}
+	status, err := engineDo(http.MethodGet, "/v1/jobs", nil, &live)
+	if err != nil || status != http.StatusOK {
+		return nil, false
+	}
+	ids := make(map[string]bool, len(live.Jobs))
+	for _, j := range live.Jobs {
+		ids[j.ID] = true
+	}
+	return ids, true
+}
+
 // collectJobs stores what up to limit finished analyze and intro jobs
 // produced and releases them in the engine.
 func collectJobs(limit int) { refreshJobs(limit) }
@@ -225,18 +243,9 @@ func refreshJobs(limit int) (reachable bool) {
 	if err != nil || len(res.Rows) == 0 {
 		return true
 	}
-	var live struct {
-		Jobs []struct {
-			ID string `json:"job_id"`
-		} `json:"jobs"`
-	}
-	status, err := engineDo(http.MethodGet, "/v1/jobs", nil, &live)
-	if err != nil || status != http.StatusOK {
+	running, reachable := engineJobs()
+	if !reachable {
 		return false
-	}
-	running := make(map[string]bool, len(live.Jobs))
-	for _, j := range live.Jobs {
-		running[j.ID] = true
 	}
 	for _, r := range res.Rows {
 		if limit <= 0 {

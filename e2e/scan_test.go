@@ -377,6 +377,41 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		Expect(storedAnalyses()).To(HaveKeyWithValue(film.Path, -1))
 	})
 
+	It("submits again the jobs a replaced engine lost", func() {
+		film := stack.Seeded.Movies[0]
+		var version int
+		var analysis string
+		db := stack.Ext()
+		Expect(db.QueryRow(
+			`SELECT version, json FROM analysis WHERE path = ?`, film.Path,
+		).Scan(&version, &analysis)).To(Succeed())
+		Expect(db.Close()).To(Succeed())
+		extExec(`DELETE FROM analysis WHERE path = ?`, film.Path)
+		DeferCleanup(
+			extExec,
+			`INSERT INTO analysis(path, version, json) VALUES(?, ?, ?)
+			ON CONFLICT(path) DO NOTHING`,
+			film.Path, version, analysis,
+		)
+
+		startScan(map[string]string{"folder_id": "movies"})
+		lost := make([]string, 0, 3)
+		for _, kind := range []string{"analyze", "subtitles", "trickplay"} {
+			lost = append(lost, jobIDOf(kind, film.Path))
+		}
+		Expect(stack.ReplaceEngine(lost...)).To(Succeed())
+		status, _ := engineJob(lost[0])
+		Expect(status).To(Equal(http.StatusNotFound))
+
+		startScan(map[string]string{"folder_id": "movies"})
+		for _, id := range lost {
+			status, _ := engineJob(id)
+			Expect(status).To(Equal(http.StatusOK), scanDump)
+		}
+		waitScanned()
+		Expect(storedAnalyses()).To(HaveKeyWithValue(film.Path, version))
+	})
+
 	It("queues a replacement and drops the old analysis", func() {
 		old := stack.Seeded.Movies[len(stack.Seeded.Movies)-1]
 		DeferCleanup(restoreFile, old)

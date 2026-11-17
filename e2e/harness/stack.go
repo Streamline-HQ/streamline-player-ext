@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -271,18 +272,6 @@ func (s *Stack) bootEngine(port int, ffmpegDir string) error {
 // RestartEngine starts the engine again once it has exited on an admin's
 // restart, as the supervisor of a real deployment does.
 func (s *Stack) RestartEngine() error {
-	u, err := url.Parse(s.EngineURL)
-	if err != nil {
-		return err
-	}
-	port, err := strconv.Atoi(u.Port())
-	if err != nil {
-		return err
-	}
-	ffmpeg, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return err
-	}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		resp, err := getWithBearer(s.EngineURL+"/v1/health", s.EngineSecret)
@@ -294,6 +283,45 @@ func (s *Stack) RestartEngine() error {
 			return errors.New("the engine did not exit on restart")
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	return s.startEngineAgain()
+}
+
+// ReplaceEngine kills the engine and starts a new one without the lost jobs,
+// queued or finished, as replacing an engine whose jobs_dir is not kept does.
+func (s *Stack) ReplaceEngine(lost ...string) error {
+	for _, p := range slices.Backward(s.procs) {
+		if p.name == "engine" {
+			_ = p.cmd.Process.Kill()
+			<-p.exited
+			break
+		}
+	}
+	jobs := filepath.Join(s.Dir, "engine", "jobs")
+	for _, id := range lost {
+		if err := os.RemoveAll(filepath.Join(jobs, id)); err != nil {
+			return err
+		}
+		err := os.Remove(filepath.Join(jobs, "backlog", id+".json"))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return s.startEngineAgain()
+}
+
+func (s *Stack) startEngineAgain() error {
+	u, err := url.Parse(s.EngineURL)
+	if err != nil {
+		return err
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		return err
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		return err
 	}
 	return s.startEngine(port, filepath.Dir(ffmpeg))
 }

@@ -358,22 +358,20 @@ func compare(scope scanScope, budget time.Duration) (done bool, err error) {
 }
 
 // jobQueue is what one comparison knows about the engine: its analysis
-// version, and which analyze jobs are already waiting.
+// version, and which jobs are already waiting there.
 type jobQueue struct {
 	version   int
 	reachable bool
 	pending   map[string]bool
 }
 
+// newJobQueue asks the engine what it holds rather than trusting the jobs
+// table: an engine replaced without its jobs_dir has forgotten jobs the table
+// still calls queued, and only a resubmission brings them back.
 func newJobQueue() *jobQueue {
-	q := &jobQueue{pending: map[string]bool{}}
-	q.version, q.reachable = engineAnalysisVersion()
-	if res, err := query(
-		`SELECT job_id FROM jobs WHERE state = ?`, jobQueued,
-	); err == nil {
-		for _, r := range res.Rows {
-			q.pending[row(r).str(0)] = true
-		}
+	q := &jobQueue{}
+	if q.version, q.reachable = engineAnalysisVersion(); q.reachable {
+		q.pending, q.reachable = engineJobs()
 	}
 	return q
 }
