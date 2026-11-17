@@ -365,23 +365,17 @@ func compare(scope scanScope, budget time.Duration) (done bool, err error) {
 }
 
 // jobQueue is what one comparison knows about the engine: its analysis
-// version, which jobs are already waiting there, and the seasons whose intro
-// job it has looked at.
+// version, whether it answers, and the seasons whose intro job it has looked
+// at.
 type jobQueue struct {
 	version   int
 	reachable bool
-	pending   map[string]bool
 	seasons   map[int64]bool
 }
 
-// newJobQueue asks the engine what it holds rather than trusting the jobs
-// table: an engine replaced without its jobs_dir has forgotten jobs the table
-// still calls queued, and only a resubmission brings them back.
 func newJobQueue() *jobQueue {
 	q := &jobQueue{seasons: map[int64]bool{}}
-	if q.version, q.reachable = engineAnalysisVersion(); q.reachable {
-		q.pending, q.reachable = engineJobs()
-	}
+	q.version, q.reachable = engineAnalysisVersion()
 	return q
 }
 
@@ -489,7 +483,7 @@ func comparePage(st *scanState, q *jobQueue) (last bool, err error) {
 		if _, known := liveSeen[f.ID]; !known || changed[f.ID] || f.Missing {
 			continue
 		}
-		if q.wants(f.Path, stats[f.ID]) {
+		if q.wants(f.Path) {
 			specs = append(specs, fileJobs(f.Path, stats[f.ID])...)
 		}
 		if f.EpisodeID != 0 {
@@ -597,12 +591,12 @@ func fileJobs(path string, st fileStat) []engineJobSpec {
 }
 
 // wants says whether a file the record already holds needs its jobs again:
-// it has no analysis of the engine's current version and none is waiting.
-func (q *jobQueue) wants(path string, st fileStat) bool {
+// it has no analysis of the engine's current version. The jobs are submitted
+// whether or not the engine already has them: it answers that it does, which
+// costs less than asking it for everything it holds, and brings back the ones
+// an engine replaced without its jobs_dir forgot.
+func (q *jobQueue) wants(path string) bool {
 	if !q.reachable {
-		return false
-	}
-	if q.pending[scan.JobID("analyze", path, st.size, st.mtimeNs)] {
 		return false
 	}
 	res, err := query(`SELECT version FROM analysis WHERE path = ?`, path)
@@ -619,15 +613,12 @@ func (q *jobQueue) submit(
 		return nil, 0
 	}
 	accepted, failed, q.reachable = submitJobs(specs)
-	for _, a := range accepted {
-		q.pending[a.ID] = true
-	}
 	return accepted, failed
 }
 
 // introJobs is the intro job of each season, not looked at yet in this
-// comparison, that has no markers stored, was not checked with its files as
-// they are now, and has none waiting in the engine.
+// comparison, that has no markers stored and was not checked with its files
+// as they are now.
 func (q *jobQueue) introJobs(seasons []int64) ([]engineJobSpec, error) {
 	if !q.reachable {
 		return nil, nil
@@ -653,9 +644,6 @@ func (q *jobQueue) introJobs(seasons []int64) ([]engineJobSpec, error) {
 	}
 	out := specs[:0]
 	for _, j := range specs {
-		if q.pending[j.ID] {
-			continue
-		}
 		res, err := query(
 			`SELECT 1 FROM intro_checked WHERE season_key = ? AND job_id = ?`,
 			j.Path, j.ID)

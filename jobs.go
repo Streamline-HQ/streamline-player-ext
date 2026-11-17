@@ -220,7 +220,15 @@ func analysisFor(path string) (json.RawMessage, bool) {
 	if a, ok := read(); ok {
 		return a, true
 	}
-	collectJobs(collectBatch)
+	res, err := query(
+		`SELECT job_id FROM jobs WHERE kind = 'analyze' AND path = ? AND state = ?`,
+		path, jobQueued)
+	if err != nil {
+		return nil, false
+	}
+	for _, r := range res.Rows {
+		collectOne(row(r).str(0), "analyze", path)
+	}
 	return read()
 }
 
@@ -333,60 +341,35 @@ func engineAnalysisVersion() (int, bool) {
 	return h.AnalysisVersion, err == nil && status == http.StatusOK
 }
 
-// engineJobs is the set of jobs the engine is running or has queued.
-func engineJobs() (map[string]bool, bool) {
-	var live struct {
-		Jobs []struct {
-			ID string `json:"job_id"`
-		} `json:"jobs"`
-	}
-	status, err := engineDo(http.MethodGet, "/v1/jobs", nil, &live)
-	if err != nil || status != http.StatusOK {
-		return nil, false
-	}
-	ids := make(map[string]bool, len(live.Jobs))
-	for _, j := range live.Jobs {
-		ids[j.ID] = true
-	}
-	return ids, true
-}
-
-// collectJobs stores what up to limit finished analyze and intro jobs
-// produced and releases them in the engine.
+// collectJobs asks the engine about up to limit waiting jobs and stores what
+// the finished ones produced. The engine posts each result itself; this is
+// what catches one whose post never arrived.
 func collectJobs(limit int) { refreshJobs(limit) }
 
-// refreshJobs does collectJobs and says whether the engine answered.
+// refreshJobs does collectJobs and says whether the engine answered. The
+// jobs are drawn at random: a library scan leaves tens of thousands waiting,
+// too many to read into a guest on every call, and the oldest ones are the
+// last the engine gets to.
 func refreshJobs(limit int) (reachable bool) {
 	res, err := query(
-		`SELECT job_id, kind, path FROM jobs WHERE state = ? ORDER BY rowid`,
-		jobQueued)
+		`SELECT job_id, kind, path FROM jobs WHERE state = ?
+		ORDER BY random() LIMIT ?`,
+		jobQueued, limit)
 	if err != nil || len(res.Rows) == 0 {
 		return true
 	}
-	running, reachable := engineJobs()
-	if !reachable {
-		return false
-	}
 	for _, r := range res.Rows {
-		if limit <= 0 {
-			break
-		}
-		id, kind, path := row(r).str(0), row(r).str(1), row(r).str(2)
-		if running[id] {
-			continue
-		}
-		limit--
-		switch kind {
-		case "analyze", "intro":
-			collectOne(id, kind, path)
-		default:
-			_ = exec(`UPDATE jobs SET state = ? WHERE job_id = ?`, jobDone, id)
+		if !collectOne(row(r).str(0), row(r).str(1), row(r).str(2)) {
+			return false
 		}
 	}
 	return true
 }
 
-func collectOne(id, kind, path string) {
+// collectOne settles one job from the engine's answer about it, and says
+// whether the engine answered. A job the engine no longer knows is forgotten,
+// so the next comparison submits it again.
+func collectOne(id, kind, path string) (answered bool) {
 	var st struct {
 		State  string          `json:"state"`
 		Result json.RawMessage `json:"result"`
@@ -394,14 +377,15 @@ func collectOne(id, kind, path string) {
 	status, err := engineDo(http.MethodGet, "/v1/jobs/"+id, nil, &st)
 	switch {
 	case err != nil:
-		return
+		return false
 	case status == http.StatusNotFound:
 		_ = exec(`DELETE FROM jobs WHERE job_id = ?`, id)
-		return
+		return true
 	case status != http.StatusOK || st.State == jobQueued || st.State == "running":
-		return
+		return true
 	}
 	settleJob(id, kind, path, st.State, st.Result)
+	return true
 }
 
 // settleJob stores what a finished job produced and releases it in the
