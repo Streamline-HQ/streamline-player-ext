@@ -30,7 +30,7 @@ func manifest() int32 {
 			"users", "user_logins", "movies", "series", "seasons", "episodes",
 			"video_files", "people", "credits",
 		},
-		Folders:  []string{"movies", "series", "artwork", "cache"},
+		Folders:  []string{"movies", "series", "artwork", "cache", storeFolder},
 		Services: []string{"http"},
 		Hooks:    []string{sdk.HookLibrary, sdk.HookSettings},
 	})

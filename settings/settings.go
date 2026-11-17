@@ -37,19 +37,26 @@ type key struct {
 	owner  string
 	engine string
 	kind   kind
+	// hidden keys are left out of what an admin page lists.
+	hidden bool
 }
 
 var table = []key{
-	{"transcoding.hw_accel", OwnerEngine, "hw_accel", choice},
-	{"transcoding.hw_device", OwnerEngine, "hw_device", text},
-	{"stream.tonemap", OwnerEngine, "tonemap", boolean},
-	{"stream.max_live", OwnerEngine, "max_transcodes", number},
-	{"engine.url", OwnerPlayer, "", baseURL},
-	{"engine.public_url", OwnerPlayer, "", baseURL},
-	{"player.url", OwnerPlayer, "", baseURL},
-	{"player.origins", OwnerPlayer, "", origins},
-	{"player.app_links", OwnerPlayer, "", appLinks},
-	{"network.home", OwnerPlayer, "", cidrs},
+	{"transcoding.hw_accel", OwnerEngine, "hw_accel", choice, false},
+	{"transcoding.hw_device", OwnerEngine, "hw_device", text, false},
+	{"stream.tonemap", OwnerEngine, "tonemap", boolean, false},
+	{"stream.max_live", OwnerEngine, "max_transcodes", number, false},
+	{"engine.url", OwnerPlayer, "", baseURL, false},
+	{"engine.public_url", OwnerPlayer, "", baseURL, false},
+	{"player.url", OwnerPlayer, "", baseURL, false},
+	{"player.origins", OwnerPlayer, "", origins, false},
+	{"player.app_links", OwnerPlayer, "", appLinks, false},
+	{"network.home", OwnerPlayer, "", cidrs, false},
+	// Where the backdrop providers are reached, for a stack that stands in
+	// for them. Unset, they are the providers' own addresses.
+	{"backdrops.tmdb_url", OwnerPlayer, "", baseURL, true},
+	{"backdrops.tmdb_image_url", OwnerPlayer, "", baseURL, true},
+	{"backdrops.tvdb_url", OwnerPlayer, "", baseURL, true},
 }
 
 var hwAccel = []string{"auto", "none", "vaapi"}
@@ -66,11 +73,13 @@ func find(name string) (key, bool) {
 	return key{}, false
 }
 
-// Keys lists every setting, the engine's first.
+// Keys lists every setting an admin sees, the engine's first.
 func Keys() []string {
-	out := make([]string, len(table))
-	for i, k := range table {
-		out[i] = k.name
+	var out []string
+	for _, k := range table {
+		if !k.hidden {
+			out = append(out, k.name)
+		}
 	}
 	return out
 }

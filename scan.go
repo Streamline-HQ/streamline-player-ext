@@ -1003,7 +1003,7 @@ func adminScan(c *call) sdk.Response {
 	if err := putSetting(callbackBaseKey, callbackBase); err != nil {
 		return internalError("keeping the address for the engine", err)
 	}
-	done, err := compare(scope, compareBudget)
+	done, err := bringUpToDate(scope, compareBudget)
 	if err != nil {
 		return libraryFailed(err)
 	}

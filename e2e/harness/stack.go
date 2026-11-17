@@ -59,6 +59,9 @@ type Options struct {
 	// Settings adds to or replaces what the file then holds.
 	FromFile bool
 	Settings map[string]any
+	// Backdrops adds what backdrops need to that file: stand-in providers,
+	// their keys and a store folder. It implies FromFile.
+	Backdrops bool
 	// Users are members created after boot, named by their email prefix.
 	Users []string
 	// Log receives the output of the processes; discarded when nil.
@@ -93,6 +96,8 @@ type Stack struct {
 	AdminToken string
 	// Seeded lists what the library file put on disk.
 	Seeded Seeded
+	// Providers stands in for TMDB and TVDB when Backdrops was asked for.
+	Providers *Providers
 
 	fromFile     bool
 	fileSettings map[string]any
@@ -193,11 +198,19 @@ func boot(opts Options) (*Stack, error) {
 	}
 
 	cfgPath := filepath.Join(dir, "config.yaml")
-	if opts.FromFile {
+	if opts.Backdrops {
+		s.Providers = newProviders()
+	}
+	if opts.FromFile || opts.Backdrops {
 		s.fromFile = true
 		s.EngineSecret = "e2e-engine-secret-from-a-file"
 		s.fileSettings = map[string]any{
 			"engine.url": s.EngineURL, "engine.public_url": s.EngineURL,
+		}
+		if s.Providers != nil {
+			for _, k := range []string{"tmdb_url", "tmdb_image_url", "tvdb_url"} {
+				s.fileSettings["backdrops."+k] = s.Providers.URL
+			}
 		}
 		maps.Copy(s.fileSettings, opts.Settings)
 	}
@@ -585,8 +598,23 @@ func (s *Stack) writeConfig(
 		); err != nil {
 			return err
 		}
+		secrets := map[string]string{"engine": secret}
+		if s.Providers != nil {
+			for name, value := range map[string]string{
+				"tmdb": tmdbKey, "tvdb": tvdbKey,
+			} {
+				secrets[name] = filepath.Join(s.Dir, name+"-key")
+				if err := os.WriteFile(
+					secrets[name], []byte(value+"\n"), 0o600,
+				); err != nil {
+					return err
+				}
+			}
+			entry["hosts"] = append(hosts, s.Providers.host())
+			entry["store_bytes"] = 1 << 20
+		}
 		entry["settings"] = s.fileSettings
-		entry["secret_files"] = map[string]string{"engine": secret}
+		entry["secret_files"] = secrets
 	}
 	cfg := map[string]any{
 		"data_dir": s.DataDir,
@@ -681,6 +709,9 @@ func (s *Stack) Close() {
 	s.closed = true
 	if s.Core != nil {
 		_ = s.Core.Close()
+	}
+	if s.Providers != nil {
+		s.Providers.server.Close()
 	}
 	for _, p := range s.procs {
 		_ = p.cmd.Process.Kill()

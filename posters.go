@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 
 	"github.com/datahearth/streamline/extensions/sdk"
 )
@@ -37,10 +38,15 @@ func getPoster(c *call) sdk.Response {
 		file = "poster.jpg"
 	}
 	folder, ok := c.R.Folder("artwork")
+	hostPath := path.Join(folder.HostPath, dir, id, file)
+	if n, err := strconv.ParseInt(id, 10, 64); file == backdropFile &&
+		kind != "people" && err == nil {
+		folder, ok = c.R.Folder(storeFolder)
+		hostPath = backdropPath(folder.HostPath, kind, n)
+	}
 	if !ok {
 		return libraryNotFound()
 	}
-	hostPath := path.Join(folder.HostPath, dir, id, file)
 	guest, ok := c.R.GuestPath(hostPath)
 	if !ok {
 		return libraryNotFound()

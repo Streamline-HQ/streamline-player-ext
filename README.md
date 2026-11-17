@@ -19,7 +19,7 @@ There is no release yet: build `player.wasm` (see [Development](#development)). 
 ### What to grant
 
 - Views: `users`, `user_logins`, `movies`, `series`, `seasons`, `episodes`, `video_files`, `people`, `credits`.
-- Folders: `movies`, `series`, `artwork`, `cache`.
+- Folders: `movies`, `series`, `artwork`, `cache`, `store` (backdrops; mounted only when the entry sets `store_bytes`).
 - Service: `http`, for the engine.
 - Mounts: `/` (the API; the extension checks the credentials itself) and `/authorize` (Streamline signs the browser in first).
 
@@ -60,6 +60,29 @@ extensions:
 - A value the player cannot use, an unknown key, or an `engine.url` whose `host:port` is not in `hosts` keeps the extension from starting, with the reason on Streamline's Extensions page.
 
 The order below is for a deployment that sets them from the app instead.
+
+### Backdrops
+
+Streamline keeps a title's poster but no backdrop, so the extension fetches them itself, from TMDB, and from TVDB for a series TMDB does not know. They are off until the entry gives it a TMDB key, room to keep the files and the providers' hosts:
+
+```yaml
+extensions:
+  - name: player
+    store_bytes: 1073741824
+    secret_files:
+      tmdb: /etc/streamline/secrets/tmdb-api-key # the API read access token, as Streamline's own metadata uses
+      tvdb: /etc/streamline/secrets/tvdb-api-key # optional
+    hosts:
+      - api.themoviedb.org
+      - image.tmdb.org
+      - api4.thetvdb.com
+      - artworks.thetvdb.com
+```
+
+- A library scan fetches the backdrop of every title that has none, and Streamline's `library` hook brings one title's up to date when it is added, refreshed or deleted. Nothing is fetched when an app asks.
+- A file is around 250 KB (the `w1280` rendition), kept in the `store` folder under `backdrops/`. Once the folder holds `store_bytes`, fetching stops with an error in Streamline's log.
+- A title no provider has a backdrop for, or that failed three times in a row, is tried again by a scan a week later, or when Streamline refreshes its metadata.
+- With a `tmdb` secret, a TMDB host missing from `hosts` keeps the extension from starting, with the reason on the Extensions page. Upgrading from a version without backdrops asks for the grants to be approved again, as the manifest now lists `store`.
 
 ### Bootstrap order
 

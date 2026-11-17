@@ -109,7 +109,7 @@ func postEngineContinue(c *call) sdk.Response {
 	if len(c.R.Folders) > 0 {
 		callFolders = c.R.Folders
 	}
-	done, err := compare(scanScope{}, compareBudget)
+	done, err := bringUpToDate(scanScope{}, compareBudget)
 	if err != nil {
 		return libraryFailed(err)
 	}

@@ -47,8 +47,23 @@ func settingsHook(r sdk.Request) sdk.Response {
 		}
 	}
 	for name := range r.Secrets {
-		if name != engineSecretName {
+		switch name {
+		case engineSecretName, tmdbSecretName, tvdbSecretName:
+		default:
 			return refuse("secret_files: " + name + " is not a secret of the player")
+		}
+	}
+	reached := []string{}
+	if r.Secrets[tmdbSecretName] != "" {
+		reached = append(reached, tmdbURL(), tmdbImageURL())
+		if r.Secrets[tvdbSecretName] != "" {
+			reached = append(reached, tvdbURL())
+		}
+	}
+	for _, base := range reached {
+		u, err := url.Parse(base)
+		if err != nil || !slices.Contains(r.Hosts, strings.ToLower(u.Host)) {
+			return refuse("secret_files: backdrops need " + base + " in hosts")
 		}
 	}
 	if raw, ok := r.Settings[engineURLKey]; ok {
@@ -73,7 +88,7 @@ func libraryHook(r sdk.Request) sdk.Response {
 	var body struct {
 		scanScope
 		// Series are titles whose own data changed. Their files are named
-		// through Episodes, so there is nothing to compare for them.
+		// through Episodes, so only their backdrop is looked at again.
 		Series []int64 `json:"series"`
 	}
 	if json.Unmarshal(r.Body, &body) != nil {
@@ -82,14 +97,13 @@ func libraryHook(r sdk.Request) sdk.Response {
 	body.Full = slices.DeleteFunc(body.Full, func(f string) bool {
 		return f != "movies" && f != "series"
 	})
-	if body.empty() {
-		if len(body.Series) > 0 {
-			return jsonOK(http.StatusAccepted, struct{}{})
-		}
+	if body.empty() && len(body.Series) == 0 {
 		return fail(http.StatusBadRequest, "invalid_request", "Nothing to compare")
 	}
 	rememberFolders(r)
-	done, err := compare(body.scanScope, compareBudget)
+	refreshBackdrops("movies", body.Movies)
+	refreshBackdrops("series", body.Series)
+	done, err := bringUpToDate(body.scanScope, compareBudget)
 	if err != nil {
 		return libraryFailed(err)
 	}
