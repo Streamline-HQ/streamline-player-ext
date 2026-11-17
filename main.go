@@ -10,7 +10,7 @@ import (
 	"github.com/datahearth/streamline/extensions/sdk"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 // main is never run in a reactor module. It names the two exports only so the
 // unused linter sees them as entry points; nothing else calls them.
