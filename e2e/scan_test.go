@@ -456,9 +456,11 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 			Expect(f.Scan).NotTo(BeNil(), f.ID)
 			p := f.Scan.Progress
 			progress[f.ID] = p
-			Expect(p).To(And(
-				BeNumerically(">", 0), BeNumerically("<", 1),
-			), f.ID)
+			Expect(p).To(BeNumerically("<", 1), f.ID)
+			if p == 0 {
+				Expect(f.Scan.ETASeconds).To(BeZero(), f.ID)
+				continue
+			}
 			Expect(f.Scan.ETASeconds).To(BeNumerically(
 				"~", elapsed.Seconds()*(1-p)/p, 3,
 			), f.ID)

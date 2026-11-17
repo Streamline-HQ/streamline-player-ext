@@ -9,15 +9,20 @@ import (
 )
 
 var _ = Describe("Progress", Label("unit"), func() {
-	It("weighs the comparison and the jobs alike", func() {
-		Expect(scan.Progress(1, 4, 3, 4)).To(Equal(0.25))
+	It("is the share of the jobs that are done once all is compared", func() {
+		Expect(scan.Progress(4, 4, 3, 4)).To(Equal(0.25))
 		Expect(scan.Progress(4, 4, 0, 4)).To(Equal(1.0))
-		Expect(scan.Progress(0, 4, 4, 4)).To(Equal(0.0))
+		Expect(scan.Progress(4, 4, 4, 4)).To(Equal(0.0))
+		Expect(scan.Progress(0, 0, 2, 4)).To(Equal(0.5))
 	})
 
-	It("counts a half with nothing in it as done", func() {
-		Expect(scan.Progress(0, 0, 2, 4)).To(Equal(0.75))
-		Expect(scan.Progress(1, 2, 0, 0)).To(Equal(0.75))
+	It("holds that share back while rows are still compared", func() {
+		Expect(scan.Progress(2, 4, 2, 4)).To(Equal(0.25))
+		Expect(scan.Progress(0, 4, 0, 4)).To(Equal(0.0))
+	})
+
+	It("follows the comparison when no job was queued", func() {
+		Expect(scan.Progress(1, 2, 0, 0)).To(Equal(0.5))
 	})
 })
 

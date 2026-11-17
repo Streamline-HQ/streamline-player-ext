@@ -9,10 +9,11 @@ import (
 // progress in thousandths, and below one there is no rate to go by.
 const Measurable = 0.001
 
-// Progress is how far a folder's scan is, from 0 to 1. The comparison counts
-// for half, by the share of the folder's rows behind the cursor, and the
-// engine's jobs for the other half, by the share no longer waiting. A half
-// with nothing to count is done.
+// Progress is how far a folder's scan is, from 0 to 1: the share of the
+// engine's jobs no longer waiting. The comparison takes minutes where the
+// jobs take hours, so it only scales that share down while rows are still
+// being compared and more jobs may come. A scan that queued no job is as far
+// as its comparison.
 func Progress(compared, rows, waiting, jobs int64) float64 {
 	share := func(done, of int64) float64 {
 		if of <= 0 {
@@ -20,7 +21,7 @@ func Progress(compared, rows, waiting, jobs int64) float64 {
 		}
 		return float64(done) / float64(of)
 	}
-	return (share(compared, rows) + share(jobs-waiting, jobs)) / 2
+	return share(compared, rows) * share(jobs-waiting, jobs)
 }
 
 // ETASeconds is the time left at the rate progress was made over elapsed,
