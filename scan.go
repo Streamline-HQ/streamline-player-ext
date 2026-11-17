@@ -983,6 +983,9 @@ func adminScan(c *call) sdk.Response {
 		}
 		scope = scanScope{Full: []string{body.FolderID}}
 	}
+	if err := putSetting(callbackBaseKey, callbackBase); err != nil {
+		return internalError("keeping the address for the engine", err)
+	}
 	done, err := compare(scope, compareBudget)
 	if err != nil {
 		return libraryFailed(err)
@@ -993,6 +996,6 @@ func adminScan(c *call) sdk.Response {
 
 func noteUnfinished(done bool) {
 	if !done {
-		sdk.Log("info", "the comparison goes on at the next request")
+		continueLater()
 	}
 }

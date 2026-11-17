@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -293,6 +294,28 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 			return status
 		}, 10*time.Second, 250*time.Millisecond).
 			Should(Equal(http.StatusNotFound), "released once stored")
+	})
+
+	It("finishes a scan with nobody connected", func() {
+		// Another request holds the comparison for a few seconds, so the scan
+		// request ends with the work still to do.
+		extExec(
+			`INSERT INTO meta(key, value) VALUES('scan_lease', ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			time.Now().Add(3*time.Second).Unix(),
+		)
+		began := time.Now().Unix()
+		startScan(map[string]string{})
+		Eventually(func() int64 {
+			db := stack.Ext()
+			defer db.Close()
+			var finished sql.NullInt64
+			Expect(db.QueryRow(
+				`SELECT finished_at FROM scan_state WHERE id = 1`,
+			).Scan(&finished)).To(Succeed())
+			return finished.Int64
+		}, 30*time.Second, 250*time.Millisecond).
+			Should(BeNumerically(">=", began), "the engine carried it on")
 	})
 
 	It("serves the stored analysis and markers through tracks", func() {

@@ -42,28 +42,86 @@ func init() {
 		)`,
 	)
 	handleRoute(http.MethodPost, engineJobsPath+"{id}", Public, postEngineJob)
+	handleRoute(http.MethodPost, engineContinuePath, Public, postEngineContinue)
 	analysisSource = analysisFor
 	markersSource = markersFor
 }
 
 const (
 	engineJobsPath        = "/engine/jobs/"
+	engineContinuePath    = "/engine/continue"
 	engineSignatureHeader = "X-Engine-Signature"
+	// callbackBaseKey keeps the address of the last admin request, for the
+	// calls that carry none.
+	callbackBaseKey  = "engine.callback_base"
+	scanContinuation = "scan"
 )
 
-// postEngineJob is where the engine posts a finished job's result. No user
-// calls it: the body is signed with the engine secret.
-func postEngineJob(c *call) sdk.Response {
+// signedByEngine says whether the request's body carries the engine's
+// signature. The engine's routes take no user credential: this is theirs.
+func signedByEngine(r sdk.Request) bool {
 	secret, ok := engineSecret()
 	if !ok {
-		return fail(http.StatusUnauthorized, "unauthorized", "Unauthorized")
+		return false
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(c.R.Body)
+	mac.Write(r.Body)
 	given, err := hex.DecodeString(
-		http.Header(c.R.Headers).Get(engineSignatureHeader),
+		http.Header(r.Headers).Get(engineSignatureHeader),
 	)
-	if err != nil || !hmac.Equal(given, mac.Sum(nil)) {
+	return err == nil && hmac.Equal(given, mac.Sum(nil))
+}
+
+// callbackURL is this extension's address for the engine, ending in path, or
+// "" when no admin request has given one yet.
+func callbackURL(path string) string {
+	base := callbackBase
+	if base == "" {
+		base, _ = setting[string](callbackBaseKey)
+	}
+	if base == "" {
+		return ""
+	}
+	return base + path
+}
+
+// continueLater asks the engine to keep calling until the comparison is done:
+// a call here ends after its budget, and nothing else would start the next.
+func continueLater() {
+	url := callbackURL(engineContinuePath)
+	if url == "" {
+		return
+	}
+	if _, err := engineDo(
+		http.MethodPut, "/v1/continuations/"+scanContinuation,
+		map[string]string{"url": url}, nil,
+	); err != nil && !errors.Is(err, errEngineNotConfigured) {
+		logFailure("asking the engine to carry the comparison on", err)
+	}
+}
+
+// postEngineContinue is what the engine calls while a comparison is
+// unfinished. 202 asks for the next call, 204 ends them.
+func postEngineContinue(c *call) sdk.Response {
+	if !signedByEngine(c.R) {
+		return fail(http.StatusUnauthorized, "unauthorized", "Unauthorized")
+	}
+	if len(c.R.Folders) > 0 {
+		callFolders = c.R.Folders
+	}
+	done, err := compare(scanScope{}, compareBudget)
+	if err != nil {
+		return libraryFailed(err)
+	}
+	if !done {
+		return sdk.Response{Status: http.StatusAccepted}
+	}
+	return sdk.Response{Status: http.StatusNoContent}
+}
+
+// postEngineJob is where the engine posts a finished job's result.
+func postEngineJob(c *call) sdk.Response {
+	if !signedByEngine(c.R) {
 		return fail(http.StatusUnauthorized, "unauthorized", "Unauthorized")
 	}
 	var body struct {
@@ -112,7 +170,7 @@ func rememberFolders(r sdk.Request) {
 		callFolders = r.Folders
 	}
 	if r.Origin != "" {
-		callbackBase = r.Origin + r.BasePath + engineJobsPath
+		callbackBase = r.Origin + r.BasePath
 	}
 }
 
@@ -205,8 +263,8 @@ func (j engineJobSpec) body() map[string]any {
 	m := map[string]any{
 		"job_id": j.ID, "type": j.Kind, "priority": "background",
 	}
-	if callbackBase != "" {
-		m["callback"] = callbackBase + j.ID
+	if url := callbackURL(engineJobsPath + j.ID); url != "" {
+		m["callback"] = url
 	}
 	if j.Kind == "intro" {
 		m["paths"] = j.Paths
