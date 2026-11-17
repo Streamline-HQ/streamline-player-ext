@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -134,6 +135,94 @@ func storedAnalyses() map[string]int {
 		out[p] = v
 	}
 	return out
+}
+
+// seasonOf is the season of an episode, with the seeded files of its
+// episodes in the order the comparison lists them.
+func seasonOf(episode harness.SeededFile) (int64, []harness.SeededFile) {
+	GinkgoHelper()
+	seasonID := func(f harness.SeededFile) int64 {
+		var id int64
+		Expect(stack.Core.QueryRow(
+			`SELECT season_episodes FROM episodes WHERE id = ?`, f.OwnerID,
+		).Scan(&id)).To(Succeed())
+		return id
+	}
+	id := seasonID(episode)
+	var files []harness.SeededFile
+	for _, e := range stack.Seeded.Episodes {
+		if seasonID(e) == id {
+			files = append(files, e)
+		}
+	}
+	return id, files
+}
+
+func introJobIDOf(files []harness.SeededFile) string {
+	GinkgoHelper()
+	paths := make([]string, 0, len(files))
+	var size, mtime int64
+	for _, f := range files {
+		info, err := os.Stat(f.Path)
+		Expect(err).NotTo(HaveOccurred())
+		paths = append(paths, f.Path)
+		size += info.Size()
+		mtime = max(mtime, info.ModTime().UnixNano())
+	}
+	return scan.JobID("intro", strings.Join(paths, "\n"), size, mtime)
+}
+
+// storedIntros is the media ids of a season that have an intro stored.
+func storedIntros(seasonKey string) []int64 {
+	GinkgoHelper()
+	db := stack.Ext()
+	defer db.Close()
+	rows, err := db.Query(
+		`SELECT media_id FROM markers
+		WHERE season_key = ? AND intro_start IS NOT NULL ORDER BY media_id`,
+		seasonKey,
+	)
+	Expect(err).NotTo(HaveOccurred())
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		Expect(rows.Scan(&id)).To(Succeed())
+		ids = append(ids, id)
+	}
+	Expect(rows.Err()).NotTo(HaveOccurred())
+	return ids
+}
+
+// keepRows saves the rows of an extension table that match cond and puts them
+// back when the spec ends.
+func keepRows(table, cond string, args ...any) {
+	GinkgoHelper()
+	db := stack.Ext()
+	defer db.Close()
+	rows, err := db.Query(`SELECT * FROM `+table+` WHERE `+cond, args...)
+	Expect(err).NotTo(HaveOccurred())
+	defer rows.Close()
+	cols, err := rows.Columns()
+	Expect(err).NotTo(HaveOccurred())
+	var kept [][]any
+	for rows.Next() {
+		r := make([]any, len(cols))
+		into := make([]any, len(cols))
+		for i := range r {
+			into[i] = &r[i]
+		}
+		Expect(rows.Scan(into...)).To(Succeed())
+		kept = append(kept, r)
+	}
+	Expect(rows.Err()).NotTo(HaveOccurred())
+	insert := `INSERT OR REPLACE INTO ` + table + `(` + strings.Join(cols, ", ") +
+		`) VALUES(` + strings.TrimSuffix(strings.Repeat("?, ", len(cols)), ", ") + `)`
+	DeferCleanup(func() {
+		for _, r := range kept {
+			extExec(insert, r...)
+		}
+	})
 }
 
 func restoreFile(f harness.SeededFile) {
@@ -410,6 +499,40 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		}
 		waitScanned()
 		Expect(storedAnalyses()).To(HaveKeyWithValue(film.Path, version))
+	})
+
+	It("checks a season's intro again only while its files went unchecked", func() {
+		seasonID, files := seasonOf(stack.Seeded.Episodes[0])
+		Expect(len(files)).To(BeNumerically(">=", 2))
+		seasonKey := "season:" + strconv.FormatInt(seasonID, 10)
+		want := make([]int64, 0, len(files))
+		for _, f := range files {
+			want = append(want, f.FileID)
+		}
+		slices.Sort(want)
+		keepRows("markers", "season_key = ?", seasonKey)
+		keepRows("intro_checked", "season_key = ?", seasonKey)
+		extExec(`DELETE FROM markers WHERE season_key = ?`, seasonKey)
+		extExec(`DELETE FROM intro_checked WHERE season_key = ?`, seasonKey)
+
+		intro := introJobIDOf(files)
+		Expect(stack.ReplaceEngine(intro)).To(Succeed())
+		status, _ := engineJob(intro)
+		Expect(status).To(Equal(http.StatusNotFound))
+
+		startScan(map[string]string{"folder_id": "series"})
+		status, _ = engineJob(intro)
+		Expect(status).To(Equal(http.StatusOK), scanDump)
+		waitScanned()
+		Expect(storedIntros(seasonKey)).To(Equal(want), scanDump)
+
+		By("leaving alone a season checked as it is, where no intro was found")
+		extExec(`DELETE FROM markers WHERE season_key = ?`, seasonKey)
+		startScan(map[string]string{"folder_id": "series"})
+		status, _ = engineJob(intro)
+		Expect(status).To(Equal(http.StatusNotFound), scanDump)
+		waitScanned()
+		Expect(storedIntros(seasonKey)).To(BeEmpty())
 	})
 
 	It("queues a replacement and drops the old analysis", func() {

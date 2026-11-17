@@ -358,18 +358,20 @@ func compare(scope scanScope, budget time.Duration) (done bool, err error) {
 }
 
 // jobQueue is what one comparison knows about the engine: its analysis
-// version, and which jobs are already waiting there.
+// version, which jobs are already waiting there, and the seasons whose intro
+// job it has looked at.
 type jobQueue struct {
 	version   int
 	reachable bool
 	pending   map[string]bool
+	seasons   map[int64]bool
 }
 
 // newJobQueue asks the engine what it holds rather than trusting the jobs
 // table: an engine replaced without its jobs_dir has forgotten jobs the table
 // still calls queued, and only a resubmission brings them back.
 func newJobQueue() *jobQueue {
-	q := &jobQueue{}
+	q := &jobQueue{seasons: map[int64]bool{}}
 	if q.version, q.reachable = engineAnalysisVersion(); q.reachable {
 		q.pending, q.reachable = engineJobs()
 	}
@@ -459,7 +461,7 @@ func comparePage(st *scanState, q *jobQueue) (last bool, err error) {
 
 	var specs []engineJobSpec
 	changed := map[int64]bool{}
-	var seasonFiles []scan.File
+	var seasonFiles, keptEpisodes []scan.File
 	for _, c := range changes {
 		if c.Kind == scan.Gone {
 			continue
@@ -483,12 +485,30 @@ func comparePage(st *scanState, q *jobQueue) (last bool, err error) {
 		if q.wants(f.Path, stats[f.ID]) {
 			specs = append(specs, fileJobs(f.Path, stats[f.ID])...)
 		}
+		if f.EpisodeID != 0 {
+			keptEpisodes = append(keptEpisodes, f)
+		}
 	}
-	intro, err := seasonJobs(seasonFiles)
+	changedSeasons, err := episodeSeasons(seasonFiles)
 	if err != nil {
 		return false, err
 	}
-	specs = append(specs, intro...)
+	intro, err := seasonJobs(changedSeasons)
+	if err != nil {
+		return false, err
+	}
+	for _, s := range changedSeasons {
+		q.seasons[s] = true
+	}
+	keptSeasons, err := episodeSeasons(keptEpisodes)
+	if err != nil {
+		return false, err
+	}
+	lostIntro, err := q.introJobs(keptSeasons)
+	if err != nil {
+		return false, err
+	}
+	specs = append(append(specs, intro...), lostIntro...)
 	accepted, failed := q.submit(specs)
 	st.errors += int64(failed)
 
@@ -598,9 +618,51 @@ func (q *jobQueue) submit(
 	return accepted, failed
 }
 
-// seasonJobs is one intro job for each season a changed file belongs to,
-// when the season has at least two files to compare.
-func seasonJobs(files []scan.File) ([]engineJobSpec, error) {
+// introJobs is the intro job of each season, not looked at yet in this
+// comparison, that has no markers stored, was not checked with its files as
+// they are now, and has none waiting in the engine.
+func (q *jobQueue) introJobs(seasons []int64) ([]engineJobSpec, error) {
+	if !q.reachable {
+		return nil, nil
+	}
+	var bare []int64
+	for _, s := range seasons {
+		if q.seasons[s] {
+			continue
+		}
+		q.seasons[s] = true
+		res, err := query(
+			`SELECT 1 FROM markers WHERE season_key = ? LIMIT 1`, seasonKey(s))
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Rows) == 0 {
+			bare = append(bare, s)
+		}
+	}
+	specs, err := seasonJobs(bare)
+	if err != nil {
+		return nil, err
+	}
+	out := specs[:0]
+	for _, j := range specs {
+		if q.pending[j.ID] {
+			continue
+		}
+		res, err := query(
+			`SELECT 1 FROM intro_checked WHERE season_key = ? AND job_id = ?`,
+			j.Path, j.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Rows) == 0 {
+			out = append(out, j)
+		}
+	}
+	return out, nil
+}
+
+func episodeSeasons(files []scan.File) ([]int64, error) {
 	episodes := make([]any, 0, len(files))
 	for _, f := range files {
 		episodes = append(episodes, f.EpisodeID)
@@ -614,9 +676,18 @@ func seasonJobs(files []scan.File) ([]engineJobSpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	seasons := make([]int64, 0, len(res.Rows))
+	for _, r := range res.Rows {
+		seasons = append(seasons, row(r).int(0))
+	}
+	return seasons, nil
+}
+
+// seasonJobs is one intro job for each season that has at least two files to
+// compare.
+func seasonJobs(seasons []int64) ([]engineJobSpec, error) {
 	var out []engineJobSpec
-	for _, s := range res.Rows {
-		season := row(s).int(0)
+	for _, season := range seasons {
 		rows, err := query(
 			`SELECT vf.path FROM streamline_video_files vf
 			JOIN streamline_episodes e ON e.id = vf.episode_id

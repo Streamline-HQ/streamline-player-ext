@@ -14,6 +14,8 @@ const (
 	clipSeconds = 8
 	subtitles   = "1\n00:00:01,000 --> 00:00:03,000\nHello\n\n" +
 		"2\n00:00:04,000 --> 00:00:06,000\nWorld\n"
+	chapters = ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=2000\n" +
+		"title=Intro\n"
 )
 
 // Seeded is what the seed put on disk and in core.
@@ -233,10 +235,15 @@ func (s *Stack) addFile(
 }
 
 // makeClip generates the one clip every file is a link to: 8 s of video with
-// a key frame every 2 s, one audio track and one SRT subtitle, in mkv.
+// a key frame every 2 s, one audio track, one SRT subtitle and an intro
+// chapter, in mkv.
 func (s *Stack) makeClip() (string, error) {
 	srt := filepath.Join(s.Dir, "clip.srt")
 	if err := os.WriteFile(srt, []byte(subtitles), 0o644); err != nil {
+		return "", err
+	}
+	meta := filepath.Join(s.Dir, "clip.ffmeta")
+	if err := os.WriteFile(meta, []byte(chapters), 0o644); err != nil {
 		return "", err
 	}
 	clip := filepath.Join(s.Dir, "clip.mkv")
@@ -244,8 +251,9 @@ func (s *Stack) makeClip() (string, error) {
 		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24",
 		"-f", "lavfi", "-i", "sine=frequency=440",
 		"-i", srt,
+		"-i", meta,
 		"-t", fmt.Sprint(clipSeconds),
-		"-map", "0:v", "-map", "1:a", "-map", "2:s",
+		"-map", "0:v", "-map", "1:a", "-map", "2:s", "-map_chapters", "3",
 		"-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "48",
 		"-c:a", "aac", "-c:s", "srt",
 		"-metadata:s:a:0", "language=eng", "-metadata:s:s:0", "language=eng",

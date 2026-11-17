@@ -27,6 +27,10 @@ func init() {
 			credits_end REAL
 		)`,
 		`CREATE INDEX IF NOT EXISTS markers_season ON markers(season_key)`,
+		`CREATE TABLE IF NOT EXISTS intro_checked(
+			season_key TEXT PRIMARY KEY,
+			job_id TEXT NOT NULL
+		) WITHOUT ROWID`,
 		`CREATE TABLE IF NOT EXISTS jobs(
 			job_id TEXT PRIMARY KEY,
 			kind TEXT NOT NULL,
@@ -293,7 +297,7 @@ func collectOne(id, kind, path string) {
 	if kind == "analyze" {
 		stored = storeAnalysis(path, st.Result)
 	} else {
-		stored = storeMarkers(path, st.Result)
+		stored = storeMarkers(id, path, st.Result)
 	}
 	if stored != nil {
 		sdk.Log("warn", "storing a job result failed",
@@ -326,7 +330,10 @@ func storeAnalysis(path string, result json.RawMessage) error {
 		path, v.Version, string(result))
 }
 
-func storeMarkers(seasonKey string, result json.RawMessage) error {
+// storeMarkers keeps what the intro job id found for a season, and records
+// that the season's files as the id names them were checked, even when no
+// episode had a span: a season without an intro leaves no markers behind.
+func storeMarkers(id, seasonKey string, result json.RawMessage) error {
 	var found []struct {
 		Path    string      `json:"path"`
 		Intro   *[2]float64 `json:"intro"`
@@ -366,7 +373,10 @@ func storeMarkers(seasonKey string, result json.RawMessage) error {
 			return err
 		}
 	}
-	return nil
+	return exec(
+		`INSERT INTO intro_checked(season_key, job_id) VALUES(?, ?)
+		ON CONFLICT(season_key) DO UPDATE SET job_id = excluded.job_id`,
+		seasonKey, id)
 }
 
 func seasonKey(id int64) string { return seasonKeyPrefix + fileIDString(id) }
