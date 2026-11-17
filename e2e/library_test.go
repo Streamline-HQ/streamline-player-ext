@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -34,6 +35,7 @@ type libTitle struct {
 		FileCount  int64  `json:"file_count"`
 		Resolution string `json:"resolution"`
 		Codec      string `json:"codec"`
+		HDR        string `json:"hdr"`
 		Audio      string `json:"audio"`
 		Channels   string `json:"channels"`
 		Size       int64  `json:"size"`
@@ -189,6 +191,31 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 		Expect(dune.Cast[0].Character).To(Equal("Paul Atreides"))
 		Expect(dune.Cast[1].Name).To(Equal("Zendaya"))
 		Expect(dune.Cast[1].Character).To(Equal("Chani"))
+	})
+
+	It("names a file's dynamic range, and none for an SDR file", func() {
+		seeded := stack.Seeded.Movies[0]
+		var before sql.NullString
+		Expect(stack.Core.QueryRow(
+			`SELECT dynamic_range FROM media_files WHERE id = ?`, seeded.FileID,
+		).Scan(&before)).To(Succeed())
+		DeferCleanup(func() {
+			_, err := stack.Core.Exec(
+				`UPDATE media_files SET dynamic_range = ? WHERE id = ?`,
+				before, seeded.FileID)
+			Expect(err).NotTo(HaveOccurred())
+		})
+		for stored, named := range map[string]string{
+			"sdr": "", "hdr10": "HDR10", "hlg": "HLG", "dv": "Dolby Vision",
+		} {
+			_, err := stack.Core.Exec(
+				`UPDATE media_files SET dynamic_range = ? WHERE id = ?`,
+				stored, seeded.FileID)
+			Expect(err).NotTo(HaveOccurred())
+			var dune libTitle
+			getLib("/movies/"+strconv.FormatInt(seeded.OwnerID, 10), k, &dune)
+			Expect(dune.FileSummary.HDR).To(Equal(named), stored)
+		}
 	})
 
 	It("serves a show with its seasons, and sums the episode files", func() {

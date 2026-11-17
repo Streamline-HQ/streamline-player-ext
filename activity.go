@@ -160,7 +160,7 @@ func fileSummaryOf(fileID int64) map[string]any {
 	for key, v := range map[string]string{
 		"resolution": libResolution(r.str(1), r.int(2)),
 		"codec":      r.str(3),
-		"hdr":        r.str(4),
+		"hdr":        libHDR(r.str(4)),
 		"audio":      r.str(5),
 		"channels":   libChannels(r.int(6)),
 	} {

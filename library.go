@@ -291,7 +291,7 @@ func titleOf(r row, show bool) title {
 		t.FileSummary = &fileSummary{
 			FileCount: r.int(15), Size: r.int(16),
 			Resolution: libResolution(r.str(17), r.int(18)),
-			Codec:      r.str(19), HDR: r.str(20), Audio: r.str(21),
+			Codec:      r.str(19), HDR: libHDR(r.str(20)), Audio: r.str(21),
 			Channels: libChannels(r.int(22)),
 		}
 	} else {
@@ -338,6 +338,20 @@ func libResolution(quality string, height int64) string {
 	}
 	if height > 0 {
 		return strconv.FormatInt(height, 10) + "p"
+	}
+	return ""
+}
+
+// libHDR names a file's dynamic range as the apps show it. Streamline says
+// "sdr" for a file with none, and the apps take any name for HDR.
+func libHDR(dynamicRange string) string {
+	switch dynamicRange {
+	case "hdr10":
+		return "HDR10"
+	case "hlg":
+		return "HLG"
+	case "dv":
+		return "Dolby Vision"
 	}
 	return ""
 }
