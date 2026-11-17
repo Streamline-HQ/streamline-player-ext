@@ -284,6 +284,7 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 	It("serves the stored analysis and markers through tracks", func() {
 		k := stack.SignInApp(stack.NewUser("tracks"), "tracks-app")
 		episode := stack.Seeded.Episodes[0]
+		keepRows("markers", "media_id = ?", episode.FileID)
 		extExec(`DELETE FROM markers WHERE media_id = ?`, episode.FileID)
 		extExec(
 			`INSERT INTO markers(media_id, season_key, intro_start, intro_end)
