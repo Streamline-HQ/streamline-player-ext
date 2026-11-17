@@ -214,7 +214,7 @@ func saveScanState(st scanState) error {
 	); err != nil {
 		return err
 	}
-	if st.finishedAt == 0 {
+	if st.finishedAt == 0 || len(st.scope.Full) == 0 {
 		return nil
 	}
 	return exec(
@@ -266,8 +266,15 @@ func registerScope(scope scanScope) error {
 			return err
 		}
 		if st.finished() {
+			// The engine may still be working through an earlier scan's jobs
+			// when a change to one title starts a comparison. The time left
+			// is measured from that scan's start, so it stays.
+			started := now().Unix()
+			if st.exists && jobsWaiting() > 0 {
+				started = st.startedAt
+			}
 			return saveScanState(scanState{
-				exists: true, scope: scope.normalized(), startedAt: now().Unix(),
+				exists: true, scope: scope.normalized(), startedAt: started,
 			})
 		}
 		merged := st.scope.merge(scope)
@@ -300,7 +307,7 @@ func advanceScan(st scanState, prevScope string) (bool, error) {
 	if err != nil || res.RowsAffected == 0 {
 		return false, err
 	}
-	if st.finishedAt == 0 {
+	if st.finishedAt == 0 || len(st.scope.Full) == 0 {
 		return true, nil
 	}
 	return true, exec(
@@ -889,12 +896,14 @@ func adminLibrary(c *call) sdk.Response {
 			ID: f.id, Name: f.name, Path: granted.HostPath, Kind: f.kind,
 			Count: row(counts.Rows[0]).int(0), Size: row(counts.Rows[0]).int(1),
 		}
-		if active && st.scope.covers(f.id) {
-			progress, err := folderProgress(st, f.id)
+		if active {
+			progress, running, err := folderProgress(st, f.id)
 			if err != nil {
 				return libraryFailed(err)
 			}
-			out.Scan = &progress
+			if running {
+				out.Scan = &progress
+			}
 		}
 		view.Folders = append(view.Folders, out)
 	}
@@ -909,6 +918,14 @@ func adminLibrary(c *call) sdk.Response {
 		}
 	}
 	return jsonOK(http.StatusOK, view)
+}
+
+func jobsWaiting() int64 {
+	res, err := query(`SELECT count(*) FROM jobs WHERE state = ?`, jobQueued)
+	if err != nil || len(res.Rows) == 0 {
+		return 0
+	}
+	return row(res.Rows[0]).int(0)
 }
 
 // scanActive says whether a scan is running: the comparison has rows left, or
@@ -929,24 +946,29 @@ func scanActive(st scanState, reachable bool) bool {
 	return false
 }
 
-// folderProgress is how far the running scan is on one folder, from the rows
-// of the folder's part of the scope and the jobs queued for them, and the time
-// left at the rate the scan went so far.
-func folderProgress(st scanState, folder string) (folderScan, error) {
-	cond, args := st.scope.only(folder).where()
+// folderProgress is how far the running scan is on one folder, and whether
+// the folder has anything left: the rows of the comparison's scope there, the
+// jobs queued for the folder's files, and the time left at the rate the scan
+// went so far. The jobs count for the whole folder, not for the scope: a
+// change to one title starts a comparison of its own while the engine still
+// works through a full scan's jobs.
+func folderProgress(st scanState, folder string) (folderScan, bool, error) {
 	var compared, rows int64
-	if !st.finished() {
+	comparing := !st.finished() && st.scope.covers(folder)
+	if comparing {
+		cond, args := st.scope.only(folder).where()
 		res, err := query(
 			`SELECT ifnull(sum(id <= ?), 0), count(*) FROM streamline_video_files
 			WHERE `+cond,
 			append([]any{st.cursor}, args...)...)
 		if err != nil {
-			return folderScan{}, err
+			return folderScan{}, false, err
 		}
 		compared, rows = row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
 	}
 	// Every file job is recorded together with its file's row in seen, which
 	// names the owner; intro jobs carry a season key instead of a path.
+	cond, args := scanScope{Full: []string{folder}}.where()
 	owned := `EXISTS (SELECT 1 FROM seen WHERE seen.path = jobs.path AND ` +
 		cond + `)`
 	if folder == "series" {
@@ -956,14 +978,14 @@ func folderProgress(st scanState, folder string) (folderScan, error) {
 		`SELECT ifnull(sum(state = ?), 0), count(*) FROM jobs WHERE `+owned,
 		append([]any{jobQueued}, args...)...)
 	if err != nil {
-		return folderScan{}, err
+		return folderScan{}, false, err
 	}
 	waiting, jobs := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
 	p := scan.Progress(compared, rows, waiting, jobs)
 	return folderScan{
 		Progress:   math.Round(p*1000) / 1000,
 		ETASeconds: scan.ETASeconds(now().Sub(time.Unix(st.startedAt, 0)), p),
-	}, nil
+	}, comparing || waiting > 0, nil
 }
 
 func adminScan(c *call) sdk.Response {

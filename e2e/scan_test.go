@@ -470,6 +470,65 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		)
 	})
 
+	It("keeps a scan's progress when one title changes meanwhile", func() {
+		film, episode := stack.Seeded.Movies[0], stack.Seeded.Episodes[0]
+		lib := waitScanned()
+		// More than one request settles, so some are still waiting afterwards.
+		const each = 200
+		for i := range each {
+			for n, path := range []string{film.Path, episode.Path} {
+				extExec(
+					`INSERT INTO jobs(job_id, kind, path, state)
+					VALUES(?, 'trickplay', ?, 'queued')`,
+					fmt.Sprintf("%032x", 0xf0000+i*2+n), path,
+				)
+			}
+		}
+		started := time.Now().Add(-2 * time.Minute).Unix()
+		extExec(`UPDATE scan_state SET started_at = ?`, started)
+		DeferCleanup(func() {
+			extExec(
+				`DELETE FROM jobs WHERE job_id LIKE '000000000000000000000000000f%'`,
+			)
+			waitScanned()
+		})
+
+		status, raw, err := stack.Do(
+			http.MethodPatch,
+			fmt.Sprintf("/api/v1/movies/%d", film.OwnerID),
+			stack.AdminToken,
+			map[string]any{"monitored": true},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(status).To(Equal(http.StatusOK), string(raw))
+		state := func() (string, int64, bool) {
+			db := stack.Ext()
+			defer db.Close()
+			var scope string
+			var at int64
+			var finished bool
+			ExpectWithOffset(1, db.QueryRow(
+				`SELECT scope, started_at, finished_at IS NOT NULL FROM scan_state`,
+			).Scan(&scope, &at, &finished)).To(Succeed())
+			return scope, at, finished
+		}
+		Eventually(func() bool {
+			scope, _, finished := state()
+			return strings.Contains(scope, `"movies":[`) && finished
+		}, time.Minute, 250*time.Millisecond).Should(BeTrue())
+		_, at, _ := state()
+		Expect(at).To(Equal(started), "the time left counts from the scan's start")
+
+		var now adminLibrary
+		getJSON("/admin/library", key(stack.AdminKey), &now)
+		for _, f := range now.Folders {
+			Expect(f.Scan).NotTo(BeNil(), f.ID)
+			Expect(f.Scan.Progress).To(BeNumerically("<", 1), f.ID)
+		}
+		Expect(now.Folders).To(HaveLen(2))
+		Expect(now.LastScan).To(Equal(lib.LastScan), "the last scan is the full one")
+	})
+
 	It("drops what an analyze job for older bytes found", func() {
 		film := stack.Seeded.Movies[0]
 		var kept int
