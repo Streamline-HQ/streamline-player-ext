@@ -117,10 +117,27 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 		}
+		// A show the player lists has a file: one episode gets one.
+		_, err = stack.Core.Exec(
+			`INSERT INTO media_files(create_time, update_time, path, size, quality,
+				format, source, container, duration_seconds, video_codec, width,
+				height, audio_codec, audio_channels, bitrate, audio_tracks,
+				audio_langs, sub_langs, probed_at, bit_depth, tag_failures,
+				episode_media_files)
+			SELECT ?, ?, '/library/two-seasons/s01e01.mkv', 1, '360p', 'mkv', 'auto',
+				'matroska', 60, 'h264', 640, 360, 'aac', 2, 1, 1, 'eng', 'eng', ?,
+				8, 0, min(e.id)
+			FROM episodes e JOIN seasons se ON se.id = e.season_episodes
+			WHERE se.tv_show_seasons = ?`,
+			stamp, stamp, stamp, twoSeasons)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterAll(func() {
 		for _, q := range []string{
+			`DELETE FROM media_files WHERE episode_media_files IN
+				(SELECT e.id FROM episodes e JOIN seasons se
+					ON se.id = e.season_episodes WHERE se.tv_show_seasons = ?)`,
 			`DELETE FROM episodes WHERE season_episodes IN
 				(SELECT id FROM seasons WHERE tv_show_seasons = ?)`,
 			`DELETE FROM seasons WHERE tv_show_seasons = ?`,
@@ -219,6 +236,33 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 		Expect(two.Seasons[0].Episodes).To(HaveLen(2))
 		Expect(two.Seasons[1].Episodes).To(HaveLen(1))
 		Expect(two.Seasons[1].Number).To(BeEquivalentTo(2))
+	})
+
+	It("leaves out a title Streamline has no file for", func() {
+		stamp := time.Now().UTC().String()
+		res, err := stack.Core.Exec(
+			`INSERT INTO movies(create_time, update_time, title, original_title,
+				year, overview, runtime, status, monitored, tmdb_id,
+				certification, grab_failures, rating, genres)
+			VALUES(?, ?, 'Still Wanted', 'Still Wanted', 2026, '', 100, 'wanted',
+				1, 9002, '', 0, 0, '[]')`,
+			stamp, stamp)
+		Expect(err).NotTo(HaveOccurred())
+		wanted, _ := res.LastInsertId()
+		DeferCleanup(func() {
+			_, err := stack.Core.Exec(`DELETE FROM movies WHERE id = ?`, wanted)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		var list libList
+		getLib("/movies", k, &list)
+		for _, t := range list.Items {
+			Expect(t.Title).NotTo(Equal("Still Wanted"))
+		}
+		status, _ := call(
+			http.MethodGet, "/movies/"+strconv.FormatInt(wanted, 10), key(k), nil,
+		)
+		Expect(status).To(Equal(http.StatusNotFound))
 	})
 
 	It("gives an episode without a runtime the show's", func() {

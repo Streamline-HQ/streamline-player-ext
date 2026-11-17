@@ -87,11 +87,14 @@ type titleList struct {
 const titleFileColumns = `a.cnt, a.size, f.quality, f.height, f.video_codec,
 	f.dynamic_range, f.audio_codec, f.channels`
 
+// A title with no file on disk is not the player's to show: Streamline is
+// still looking for it, and there is nothing to play. The inner joins below
+// leave those out of the lists and make their detail a 404.
 const movieSelect = `SELECT m.id, m.title, m.original_title, m.year, m.overview,
 	m.runtime, m.rating, m.genres, m.monitored, m.certification, m.added_at,
 	m.tmdb_id, '', '', '', ` + titleFileColumns + `
 FROM streamline_movies m
-LEFT JOIN (
+JOIN (
 	SELECT movie_id AS owner, count(*) AS cnt, sum(size) AS size, min(id) AS first
 	FROM streamline_video_files
 	WHERE missing = 0 AND movie_id IS NOT NULL
@@ -104,7 +107,7 @@ const seriesSelect = `SELECT s.id, s.title, s.original_title, s.year, s.overview
 	(SELECT count(*) FROM streamline_seasons WHERE series_id = s.id),
 	s.status, s.network, s.first_aired, ` + titleFileColumns + `
 FROM streamline_series s
-LEFT JOIN (
+JOIN (
 	SELECT se.series_id AS owner, count(*) AS cnt, sum(vf.size) AS size,
 		min(vf.id) AS first
 	FROM streamline_video_files vf

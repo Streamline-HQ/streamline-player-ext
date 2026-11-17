@@ -63,12 +63,16 @@ func getPerson(c *call) sdk.Response {
 		`SELECT 'movies', m.id, m.title, m.year, c.character, 0, m.rating
 		FROM streamline_credits c JOIN streamline_movies m ON m.id = c.movie_id
 		WHERE c.person_id = ?1 AND c.job = ''
+			AND `+withFile+`f.movie_id = m.id)
 		UNION ALL
 		SELECT 'series', s.id, s.title, s.year, c.character,
 			(SELECT count(*) FROM streamline_seasons WHERE series_id = s.id),
 			s.rating
 		FROM streamline_credits c JOIN streamline_series s ON s.id = c.series_id
 		WHERE c.person_id = ?1 AND c.job = ''
+			AND EXISTS(SELECT 1 FROM streamline_seasons se
+				JOIN streamline_episodes e ON e.season_id = se.id
+				WHERE se.series_id = s.id AND `+withFile+`f.episode_id = e.id))
 		ORDER BY 4 DESC, 3`, id)
 	if err != nil {
 		return libraryFailed(err)
