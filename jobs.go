@@ -334,36 +334,42 @@ func recordJobs(specs []engineJobSpec) error {
 
 // engineAnalysisVersion is the analysis version the engine produces now.
 func engineAnalysisVersion() (int, bool) {
-	var h struct {
-		AnalysisVersion int `json:"analysis_version"`
-	}
+	h, ok := readEngineState()
+	return h.AnalysisVersion, ok
+}
+
+type engineState struct {
+	AnalysisVersion int `json:"analysis_version"`
+	// JobsOwed is how many accepted jobs the engine has yet to finish or to
+	// post the result of. Nil while it is still reading its queue back after
+	// a restart, and from an engine that does not report it.
+	JobsOwed *int64 `json:"jobs_owed"`
+}
+
+func readEngineState() (engineState, bool) {
+	var h engineState
 	status, err := engineDo(http.MethodGet, "/v1/health", nil, &h)
-	return h.AnalysisVersion, err == nil && status == http.StatusOK
+	return h, err == nil && status == http.StatusOK
 }
 
 // collectJobs asks the engine about up to limit waiting jobs and stores what
 // the finished ones produced. The engine posts each result itself; this is
-// what catches one whose post never arrived.
-func collectJobs(limit int) { refreshJobs(limit) }
-
-// refreshJobs does collectJobs and says whether the engine answered. The
-// jobs are drawn at random: a library scan leaves tens of thousands waiting,
-// too many to read into a guest on every call, and the oldest ones are the
-// last the engine gets to.
-func refreshJobs(limit int) (reachable bool) {
+// what catches one whose post never arrived. The jobs are drawn at random: a
+// library scan leaves tens of thousands waiting, too many to read into a
+// guest on every call, and the oldest ones are the last the engine gets to.
+func collectJobs(limit int) {
 	res, err := query(
 		`SELECT job_id, kind, path FROM jobs WHERE state = ?
 		ORDER BY random() LIMIT ?`,
 		jobQueued, limit)
-	if err != nil || len(res.Rows) == 0 {
-		return true
+	if err != nil {
+		return
 	}
 	for _, r := range res.Rows {
 		if !collectOne(row(r).str(0), row(r).str(1), row(r).str(2)) {
-			return false
+			return
 		}
 	}
-	return true
 }
 
 // collectOne settles one job from the engine's answer about it, and says

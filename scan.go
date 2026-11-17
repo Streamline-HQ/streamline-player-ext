@@ -855,17 +855,12 @@ var errCountFolder = errors.New("counting the files of a folder failed")
 
 func adminLibrary(c *call) sdk.Response {
 	rememberFolders(c.R)
-	if st, err := loadScanState(); err == nil && !st.finished() {
-		if _, err := compare(scanScope{}, compareBudget/2); err != nil {
-			return libraryFailed(err)
-		}
-	}
-	reachable := refreshJobs(collectBatch * 4)
+	health, reachable := readEngineState()
 	st, err := loadScanState()
 	if err != nil {
 		return libraryFailed(err)
 	}
-	active := scanActive(st, reachable)
+	active := scanActive(st, reachable, health.JobsOwed)
 
 	view := libraryView{Folders: []libraryFolder{}}
 	for _, f := range libraryFolders {
@@ -917,15 +912,27 @@ func jobsWaiting() int64 {
 }
 
 // scanActive says whether a scan is running: the comparison has rows left, or
-// the engine has jobs to finish. Once it is over, the finished jobs are cleared.
-func scanActive(st scanState, reachable bool) bool {
+// the engine has jobs to finish. Once it is over, the finished jobs are
+// cleared, and so are those still waiting here when the engine owes none: it
+// has lost them, and the next comparison submits their files again.
+func scanActive(st scanState, reachable bool, owed *int64) bool {
+	if !st.finished() {
+		return true
+	}
+	// Only once the comparison is over: while it runs it records the jobs
+	// the engine has just accepted, and one recorded between the engine's
+	// answer and this delete would be lost.
+	if reachable && owed != nil && *owed == 0 {
+		_ = exec(`DELETE FROM jobs`)
+		return false
+	}
 	res, err := query(
 		`SELECT count(*), ifnull(sum(state = ?), 0) FROM jobs`, jobQueued)
 	var total, waiting int64
 	if err == nil && len(res.Rows) == 1 {
 		total, waiting = row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
 	}
-	if !st.finished() || (reachable && waiting > 0) {
+	if reachable && waiting > 0 {
 		return true
 	}
 	if total > 0 {

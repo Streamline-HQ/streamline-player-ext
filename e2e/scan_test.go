@@ -385,6 +385,7 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		)
 		DeferCleanup(func() {
 			extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
+			startScan(nil)
 			waitScanned()
 		})
 		cursor := func() (int64, string, bool) {
@@ -446,6 +447,7 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		)
 		DeferCleanup(func() {
 			extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
+			startScan(nil)
 			waitScanned()
 		})
 
@@ -475,20 +477,49 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 	It("keeps a scan's progress when one title changes meanwhile", func() {
 		film, episode := stack.Seeded.Movies[0], stack.Seeded.Episodes[0]
 		lib := waitScanned()
-		// More than one request settles, so some are still waiting afterwards.
+		// The engine holds these for real: jobs it does not owe are dropped
+		// from the record. There are enough to still be waiting afterwards.
 		const each = 200
+		ids := make([]string, 0, 2*each)
+		batch := make([]map[string]any, 0, 2*each)
 		for i := range each {
 			for n, path := range []string{film.Path, episode.Path} {
+				id := fmt.Sprintf("%032x", 0xf0000+i*2+n)
+				ids = append(ids, id)
+				batch = append(batch, map[string]any{
+					"job_id": id, "type": "trickplay", "priority": "background",
+					"path": path,
+				})
 				extExec(
 					`INSERT INTO jobs(job_id, kind, path, state)
 					VALUES(?, 'trickplay', ?, 'queued')`,
-					fmt.Sprintf("%032x", 0xf0000+i*2+n), path,
+					id, path,
 				)
 			}
 		}
+		engineCall := func(method, path string, body any) int {
+			raw, err := json.Marshal(body)
+			Expect(err).NotTo(HaveOccurred())
+			req, err := http.NewRequest(
+				method, stack.EngineURL+path, bytes.NewReader(raw),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			req.Header.Set("Authorization", "Bearer "+stack.EngineSecret)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.Body.Close()).To(Succeed())
+			return resp.StatusCode
+		}
+		Expect(engineCall(http.MethodPost, "/v1/jobs", batch)).To(
+			BeNumerically("<", http.StatusBadRequest),
+		)
 		started := time.Now().Add(-2 * time.Minute).Unix()
 		extExec(`UPDATE scan_state SET started_at = ?`, started)
 		DeferCleanup(func() {
+			for _, id := range ids {
+				engineCall(http.MethodDelete, "/v1/jobs/"+id, nil)
+			}
 			extExec(
 				`DELETE FROM jobs WHERE job_id LIKE '000000000000000000000000000f%'`,
 			)
@@ -550,9 +581,15 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		old := fmt.Sprintf("%x", sha256.Sum256([]byte("older bytes")))[:32]
 		body, err := json.Marshal([]map[string]any{{
 			"job_id": old, "type": "analyze", "priority": "interactive",
-			"path": film.Path,
+			"path":     film.Path,
+			"callback": stack.BaseURL + "/extensions/player/engine/jobs/" + old,
 		}})
 		Expect(err).NotTo(HaveOccurred())
+		extExec(
+			`INSERT INTO jobs(job_id, kind, path, state) VALUES(?, 'analyze', ?, 'queued')`,
+			old,
+			film.Path,
+		)
 		req, err := http.NewRequest(
 			http.MethodPost, stack.EngineURL+"/v1/jobs", bytes.NewReader(body),
 		)
@@ -563,21 +600,11 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 		resp.Body.Close()
 		Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
-		extExec(
-			`INSERT INTO jobs(job_id, kind, path, state) VALUES(?, 'analyze', ?, 'queued')`,
-			old,
-			film.Path,
-		)
-		Eventually(func() string {
-			_, state := engineJob(old)
-			return state
-		}, time.Minute, 250*time.Millisecond).Should(Equal("done"))
-
+		// The engine posts the result, and the job is released once taken.
 		Eventually(func() int {
-			getJSON("/admin/library", key(stack.AdminKey), &adminLibrary{})
 			status, _ := engineJob(old)
 			return status
-		}, 30*time.Second, 500*time.Millisecond).Should(Equal(http.StatusNotFound))
+		}, time.Minute, 250*time.Millisecond).Should(Equal(http.StatusNotFound))
 		Expect(storedAnalyses()).To(HaveKeyWithValue(film.Path, -1))
 	})
 
