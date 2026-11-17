@@ -564,6 +564,14 @@ func analysisOf(f playFile, guest string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, nil //nolint:nilerr // a file that cannot be read has no analysis
 	}
+	// A scan may hold this job in the engine's background queue, behind
+	// thousands of others. Asking for it as interactive moves it to the front;
+	// for a job the engine does not have, or already runs, this changes nothing.
+	if _, _, err := engineFetch(http.MethodPost, "/v1/jobs", map[string]any{
+		"job_id": id, "type": "analyze", "priority": "interactive", "path": f.Path,
+	}); err != nil {
+		return nil, err
+	}
 	deadline := now().Add(analysisWait)
 	for {
 		js, err := jobState(id, "analyze", f.Path, "interactive")
