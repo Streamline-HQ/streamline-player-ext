@@ -61,7 +61,7 @@ task test:unit
 STREAMLINE_BIN=/path/to/streamline ENGINE_BIN=/path/to/engine task test:e2e
 ```
 
-The e2e suite needs `ffmpeg` and `ffprobe` on `PATH`. The SDK is `github.com/datahearth/streamline/extensions/sdk` from a sibling `../streamline` checkout (a `replace` in `go.mod`) until Streamline publishes it with the asks this extension needs.
+The e2e suite needs `ffmpeg` and `ffprobe` on `PATH`. The SDK is `github.com/datahearth/streamline/extensions/sdk`, pinned in `go.mod` to a Streamline commit until it has a tagged release.
 
 `go run ./e2e/cmd/stack --library <json>` boots Streamline, the extension and the engine on a seeded library and prints one JSON line with the addresses and the admin login.
 

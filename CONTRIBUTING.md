@@ -18,10 +18,12 @@ useful things you can send.
 
 ## Setup
 
-Requires Go (the `go` directive in `go.mod`), [Task](https://taskfile.dev), and
-a Streamline checkout beside this one: `go.mod` takes the SDK from
-`../streamline/extensions/sdk` through a `replace` until Streamline publishes it
-with the asks this extension needs. The end-to-end suite also needs a
+Requires Go (the `go` directive in `go.mod`) and [Task](https://taskfile.dev).
+The SDK, `github.com/datahearth/streamline/extensions/sdk`, has no tagged
+release yet, so `go.mod` pins it to a Streamline commit; move it with
+`go get github.com/datahearth/streamline/extensions/sdk@<commit>`. To build
+against a local Streamline checkout, `go work use ../streamline/extensions/sdk`
+and leave that line out of the commit. The end-to-end suite also needs a
 Streamline binary, the engine (from
 [streamline-player](https://github.com/Streamline-HQ/streamline-player)), and
 `ffmpeg` and `ffprobe` on `PATH`.
