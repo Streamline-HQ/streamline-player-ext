@@ -41,7 +41,7 @@ extensions:
 
 1. Add and approve the extension, with the `hosts` entry above.
 2. Sign in to the desktop app first: its loopback sign-in needs no setting. The web player cannot sign in yet, because `redirect_uri` is refused until `player.origins` lists its origin, and only an admin can change that.
-3. In Server settings (or `PATCH /admin/settings`), set `player.origins` to the origin of every web player (`https://watch.example.net`), and `player.url` to the player's public address.
+3. In Server settings (or `PATCH /admin/settings`), set `player.origins` to the origin of every web player (`https://watch.example.net`), and `player.url` to the player's public address. A web player on another origin than Streamline also needs that origin in Streamline's `server.cors_origins`, or the browser blocks every answer and the sign-in card reports Streamline unreachable.
 4. Read the engine secret once from Server settings (`POST /admin/engine/secret`), put it in the engine's config (`secret:` or `secret_file:`) and start the engine.
 5. Set the engine's address in Server settings (`engine.url`, and `engine.public_url` when players reach it by another address).
 
