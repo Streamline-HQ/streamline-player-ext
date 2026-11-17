@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -25,7 +26,8 @@ type adminLibrary struct {
 		Count int    `json:"count"`
 		Size  int64  `json:"size"`
 		Scan  *struct {
-			Progress float64 `json:"progress"`
+			Progress   float64 `json:"progress"`
+			ETASeconds int64   `json:"eta_seconds"`
 		} `json:"scan"`
 	} `json:"folders"`
 	LastScan *struct {
@@ -270,6 +272,59 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		Expect(c).To(BeZero())
 		Expect(sc).To(ContainSubstring("series"))
 		Expect(sc).To(ContainSubstring("movies"))
+	})
+
+	It("reports each folder's own progress and the time left at its rate", func() {
+		movies := make([]int64, 0, len(stack.Seeded.Movies))
+		for _, m := range stack.Seeded.Movies {
+			movies = append(movies, m.FileID)
+		}
+		slices.Sort(movies)
+		Expect(len(movies)).To(BeNumerically(">=", 2))
+		episodes := make([]int64, 0, len(stack.Seeded.Episodes))
+		for _, e := range stack.Seeded.Episodes {
+			episodes = append(episodes, e.FileID)
+		}
+		Expect(slices.Min(episodes)).To(BeNumerically(">", movies[0]))
+
+		elapsed := 2 * time.Minute
+		extExec(
+			`INSERT INTO scan_state(id, cursor, scope, started_at, finished_at)
+			VALUES(1, ?, ?, ?, NULL) ON CONFLICT(id) DO UPDATE SET
+				cursor = excluded.cursor, scope = excluded.scope,
+				started_at = excluded.started_at, finished_at = NULL`,
+			movies[0], `{"full":["movies","series"]}`,
+			time.Now().Add(-elapsed).Unix(),
+		)
+		extExec(
+			`INSERT INTO meta(key, value) VALUES('scan_lease', ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10),
+		)
+		DeferCleanup(func() {
+			extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
+			waitScanned()
+		})
+
+		var lib adminLibrary
+		getJSON("/admin/library", key(stack.AdminKey), &lib)
+		progress := map[string]float64{}
+		for _, f := range lib.Folders {
+			Expect(f.Scan).NotTo(BeNil(), f.ID)
+			p := f.Scan.Progress
+			progress[f.ID] = p
+			Expect(p).To(And(
+				BeNumerically(">", 0), BeNumerically("<", 1),
+			), f.ID)
+			Expect(f.Scan.ETASeconds).To(BeNumerically(
+				"~", elapsed.Seconds()*(1-p)/p, 3,
+			), f.ID)
+		}
+		Expect(progress).To(HaveLen(2))
+		Expect(progress["movies"]).To(
+			BeNumerically(">", progress["series"]),
+			"movies are partly compared, series not yet",
+		)
 	})
 
 	It("drops what an analyze job for older bytes found", func() {

@@ -121,6 +121,20 @@ func (s scanScope) covers(folder string) bool {
 	return len(s.Episodes) > 0
 }
 
+// only is the part of the scope that lies in folder.
+func (s scanScope) only(folder string) scanScope {
+	var o scanScope
+	if slices.Contains(s.Full, folder) {
+		o.Full = []string{folder}
+	}
+	if folder == "movies" {
+		o.Movies = s.Movies
+	} else {
+		o.Episodes = s.Episodes
+	}
+	return o
+}
+
 func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
@@ -787,7 +801,7 @@ func adminLibrary(c *call) sdk.Response {
 	if err != nil {
 		return libraryFailed(err)
 	}
-	active, progress := scanProgress(st, reachable)
+	active := scanActive(st, reachable)
 
 	view := libraryView{Folders: []libraryFolder{}}
 	for _, f := range libraryFolders {
@@ -807,7 +821,11 @@ func adminLibrary(c *call) sdk.Response {
 			Count: row(counts.Rows[0]).int(0), Size: row(counts.Rows[0]).int(1),
 		}
 		if active && st.scope.covers(f.id) {
-			out.Scan = &folderScan{Progress: progress}
+			progress, err := folderProgress(st, f.id)
+			if err != nil {
+				return libraryFailed(err)
+			}
+			out.Scan = &progress
 		}
 		view.Folders = append(view.Folders, out)
 	}
@@ -824,37 +842,59 @@ func adminLibrary(c *call) sdk.Response {
 	return jsonOK(http.StatusOK, view)
 }
 
-// scanProgress says whether a scan is running and how far it is: the
-// comparison counts for half and the engine's jobs for the other half.
-func scanProgress(st scanState, reachable bool) (active bool, progress float64) {
+// scanActive says whether a scan is running: the comparison has rows left, or
+// the engine has jobs to finish. Once it is over, the finished jobs are cleared.
+func scanActive(st scanState, reachable bool) bool {
 	res, err := query(
 		`SELECT count(*), ifnull(sum(state = ?), 0) FROM jobs`, jobQueued)
 	var total, waiting int64
 	if err == nil && len(res.Rows) == 1 {
 		total, waiting = row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
 	}
-	comparing := !st.finished()
-	waitingOnEngine := reachable && waiting > 0
-	if !comparing && !waitingOnEngine {
-		if total > 0 {
-			_ = exec(`DELETE FROM jobs WHERE state != ?`, jobQueued)
-		}
-		return false, 1
+	if !st.finished() || (reachable && waiting > 0) {
+		return true
 	}
-	compared := 1.0
-	if comparing {
-		compared = 0
-		if m, err := query(
-			`SELECT ifnull(max(id), 0) FROM streamline_video_files`,
-		); err == nil && len(m.Rows) == 1 && row(m.Rows[0]).int(0) > 0 {
-			compared = float64(st.cursor) / float64(row(m.Rows[0]).int(0))
-		}
-	}
-	worked := 1.0
 	if total > 0 {
-		worked = 1 - float64(waiting)/float64(total)
+		_ = exec(`DELETE FROM jobs WHERE state != ?`, jobQueued)
 	}
-	return true, math.Round((compared+worked)/2*1000) / 1000
+	return false
+}
+
+// folderProgress is how far the running scan is on one folder, from the rows
+// of the folder's part of the scope and the jobs queued for them, and the time
+// left at the rate the scan went so far.
+func folderProgress(st scanState, folder string) (folderScan, error) {
+	cond, args := st.scope.only(folder).where()
+	var compared, rows int64
+	if !st.finished() {
+		res, err := query(
+			`SELECT ifnull(sum(id <= ?), 0), count(*) FROM streamline_video_files
+			WHERE `+cond,
+			append([]any{st.cursor}, args...)...)
+		if err != nil {
+			return folderScan{}, err
+		}
+		compared, rows = row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
+	}
+	// Every file job is recorded together with its file's row in seen, which
+	// names the owner; intro jobs carry a season key instead of a path.
+	owned := `EXISTS (SELECT 1 FROM seen WHERE seen.path = jobs.path AND ` +
+		cond + `)`
+	if folder == "series" {
+		owned = `(jobs.kind = 'intro' OR ` + owned + `)`
+	}
+	res, err := query(
+		`SELECT ifnull(sum(state = ?), 0), count(*) FROM jobs WHERE `+owned,
+		append([]any{jobQueued}, args...)...)
+	if err != nil {
+		return folderScan{}, err
+	}
+	waiting, jobs := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
+	p := scan.Progress(compared, rows, waiting, jobs)
+	return folderScan{
+		Progress:   math.Round(p*1000) / 1000,
+		ETASeconds: scan.ETASeconds(now().Sub(time.Unix(st.startedAt, 0)), p),
+	}, nil
 }
 
 func adminScan(c *call) sdk.Response {

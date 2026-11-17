@@ -1,6 +1,6 @@
 // Package scan decides what changed between the files Streamline lists and the
-// files the extension has seen. It does no I/O, so paging and replacement are
-// specified without a host.
+// files the extension has seen, and how far a scan of them is. It does no I/O,
+// so paging, replacement and progress are specified without a host.
 package scan
 
 import (
