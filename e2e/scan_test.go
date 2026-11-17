@@ -281,6 +281,20 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		}
 	})
 
+	It("stores what the engine pushes, with nobody on the Library page", func() {
+		film := stack.Seeded.Movies[0]
+		keepRows("analysis", "path = ?", film.Path)
+		extExec(`DELETE FROM analysis WHERE path = ?`, film.Path)
+		startScan(map[string]string{})
+		Eventually(storedAnalyses, time.Minute, 250*time.Millisecond).
+			Should(HaveKey(film.Path))
+		Eventually(func() int {
+			status, _ := engineJob(jobIDOf("analyze", film.Path))
+			return status
+		}, 10*time.Second, 250*time.Millisecond).
+			Should(Equal(http.StatusNotFound), "released once stored")
+	})
+
 	It("serves the stored analysis and markers through tracks", func() {
 		k := stack.SignInApp(stack.NewUser("tracks"), "tracks-app")
 		episode := stack.Seeded.Episodes[0]

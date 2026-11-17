@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -38,8 +41,52 @@ func init() {
 			state TEXT NOT NULL
 		)`,
 	)
+	handleRoute(http.MethodPost, engineJobsPath+"{id}", Public, postEngineJob)
 	analysisSource = analysisFor
 	markersSource = markersFor
+}
+
+const (
+	engineJobsPath        = "/engine/jobs/"
+	engineSignatureHeader = "X-Engine-Signature"
+)
+
+// postEngineJob is where the engine posts a finished job's result. No user
+// calls it: the body is signed with the engine secret.
+func postEngineJob(c *call) sdk.Response {
+	secret, ok := engineSecret()
+	if !ok {
+		return fail(http.StatusUnauthorized, "unauthorized", "Unauthorized")
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(c.R.Body)
+	given, err := hex.DecodeString(
+		http.Header(c.R.Headers).Get(engineSignatureHeader),
+	)
+	if err != nil || !hmac.Equal(given, mac.Sum(nil)) {
+		return fail(http.StatusUnauthorized, "unauthorized", "Unauthorized")
+	}
+	var body struct {
+		ID     string          `json:"job_id"`
+		State  string          `json:"state"`
+		Result json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(c.R.Body, &body) != nil || body.ID != c.Params["id"] {
+		return fail(http.StatusBadRequest, "invalid_request", "Invalid request")
+	}
+	res, err := query(
+		`SELECT kind, path FROM jobs WHERE job_id = ? AND state = ?`,
+		body.ID, jobQueued)
+	if err != nil {
+		return internalError("reading a job", err)
+	}
+	if len(res.Rows) == 0 {
+		return fail(http.StatusNotFound, "not_found", "No such job")
+	}
+	rememberFolders(c.R)
+	settleJob(body.ID, row(res.Rows[0]).str(0), row(res.Rows[0]).str(1),
+		body.State, body.Result)
+	return sdk.Response{Status: http.StatusNoContent}
 }
 
 const (
@@ -55,9 +102,17 @@ const (
 // is told host paths, and the guest stats them through this mapping.
 var callFolders []sdk.Folder
 
+// callbackBase is where the engine posts a finished job's result: this
+// extension as the admin who started the comparison reached it. It stays
+// empty for a call that came from the host, which has no address.
+var callbackBase string
+
 func rememberFolders(r sdk.Request) {
 	if len(r.Folders) > 0 {
 		callFolders = r.Folders
+	}
+	if r.Origin != "" {
+		callbackBase = r.Origin + r.BasePath + engineJobsPath
 	}
 }
 
@@ -149,6 +204,9 @@ type engineJobSpec struct {
 func (j engineJobSpec) body() map[string]any {
 	m := map[string]any{
 		"job_id": j.ID, "type": j.Kind, "priority": "background",
+	}
+	if callbackBase != "" {
+		m["callback"] = callbackBase + j.ID
 	}
 	if j.Kind == "intro" {
 		m["paths"] = j.Paths
@@ -284,8 +342,19 @@ func collectOne(id, kind, path string) {
 		return
 	case status != http.StatusOK || st.State == jobQueued || st.State == "running":
 		return
-	case st.State != jobDone:
+	}
+	settleJob(id, kind, path, st.State, st.Result)
+}
+
+// settleJob stores what a finished job produced and releases it in the
+// engine. A failed job is forgotten: the next comparison submits it again.
+func settleJob(id, kind, path, state string, result json.RawMessage) {
+	if state != jobDone {
 		_ = exec(`DELETE FROM jobs WHERE job_id = ?`, id)
+		return
+	}
+	if kind != "analyze" && kind != "intro" {
+		_ = exec(`UPDATE jobs SET state = ? WHERE job_id = ?`, jobDone, id)
 		return
 	}
 	if kind == "analyze" && supersededAnalysis(id, path) {
@@ -295,9 +364,9 @@ func collectOne(id, kind, path string) {
 	}
 	var stored error
 	if kind == "analyze" {
-		stored = storeAnalysis(path, st.Result)
+		stored = storeAnalysis(path, result)
 	} else {
-		stored = storeMarkers(id, path, st.Result)
+		stored = storeMarkers(id, path, result)
 	}
 	if stored != nil {
 		sdk.Log("warn", "storing a job result failed",

@@ -45,6 +45,8 @@ extensions:
 4. Read the engine secret once from Server settings (`POST /admin/engine/secret`), put it in the engine's config (`secret:` or `secret_file:`) and start the engine.
 5. Set the engine's address in Server settings (`engine.url`, and `engine.public_url` when players reach it by another address).
 
+The engine posts each finished analysis back to Streamline, at the address the admin who starts a library scan uses, so the engine must be able to reach that address. When it cannot, results are still collected while an admin has the Library page open.
+
 Until step 5 is done the API answers playback requests with `503 engine_unavailable`; browsing, accounts and admin pages keep working.
 
 ## Documentation
