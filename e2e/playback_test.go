@@ -361,13 +361,23 @@ var _ = Describe("playback", Label("e2e"), Ordered, func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 		req.Header.Set("X-API-Key", k)
-		if resp, err := (&http.Client{Timeout: time.Minute}).Do(req); err == nil {
-			resp.Body.Close()
-		}
+		answered := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			defer close(answered)
+			if resp, err := (&http.Client{Timeout: time.Minute}).Do(
+				req,
+			); err == nil {
+				resp.Body.Close()
+			}
+		}()
+		Eventually(func() int { return sessionRows(s.SessionID) }).
+			WithTimeout(10*time.Second).
+			Should(BeZero(), "forgotten before the engine call")
+		Consistently(answered, time.Second).ShouldNot(BeClosed(),
+			"the engine is still frozen")
 		thaw()
-		Expect(
-			sessionRows(s.SessionID),
-		).To(BeZero(), "forgotten before the engine call")
+		Eventually(answered, 10*time.Second).Should(BeClosed())
 	})
 
 	It("tells the player an admin stopped it, and that the engine restarts", func() {
