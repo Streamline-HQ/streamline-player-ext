@@ -23,7 +23,7 @@ const (
 	hlsTTL   = 6 * time.Hour
 	mediaTTL = 12 * time.Hour
 
-	analysisWait = 20 * time.Second
+	analysisWait = 3 * time.Second
 	jobPoll      = 250 * time.Millisecond
 )
 
@@ -585,10 +585,25 @@ func analysisOf(f playFile, guest string) (json.RawMessage, error) {
 			return nil, nil
 		}
 		if !now().Before(deadline) {
-			return nil, nil
+			return probeOf(f), nil
 		}
 		time.Sleep(jobPoll)
 	}
+}
+
+// probeOf is the file's tracks without its keyframes, which the engine reads
+// at once however large the file. Enough to name the tracks while the analyze
+// job goes on; never stored, the job's result is.
+func probeOf(f playFile) json.RawMessage {
+	status, raw, err := engineFetch(
+		http.MethodPost,
+		"/v1/probe",
+		map[string]any{"path": f.Path},
+	)
+	if err != nil || status != http.StatusOK {
+		return nil
+	}
+	return raw
 }
 
 type subtitleJob struct {
