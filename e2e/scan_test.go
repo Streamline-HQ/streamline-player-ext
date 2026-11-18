@@ -433,12 +433,13 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 			}
 			Expect(slices.Min(episodes)).To(BeNumerically(">", movies[0]))
 
-			// Two movie jobs finished over the last minute and three wait: 90 s.
+			// Three movie jobs finished half a minute apart, the last one just now,
+			// and three wait: 90 s.
 			span := time.Minute
 			film := stack.Seeded.Movies[0]
 			extExec(`DELETE FROM job_ends`)
 			extExec(`DELETE FROM jobs`)
-			for i, state := range []string{"done", "done", "queued", "queued", "queued"} {
+			for i, state := range []string{"done", "done", "done", "queued", "queued", "queued"} {
 				id := fmt.Sprintf("eta-%d", i)
 				extExec(
 					`INSERT INTO jobs(job_id, kind, path, state)
@@ -446,7 +447,7 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 				if state == "done" {
 					extExec(
 						`INSERT INTO job_ends(job_id, at) VALUES(?, ?)`,
-						id, time.Now().Add(-span/time.Duration(i+1)).Unix())
+						id, time.Now().Add(-span*time.Duration(2-i)/2).Unix())
 				}
 			}
 			extExec(
@@ -481,11 +482,11 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 				if f.ID == "series" {
 					Expect(
 						f.Scan.ETASeconds,
-					).To(BeZero(), "no job of its own to go by")
+					).To(BeZero(), "nothing of its own waits")
 					continue
 				}
 				Expect(f.Scan.ETASeconds).To(
-					BeNumerically("~", 3*span.Seconds()/2, 3),
+					BeNumerically("~", 3*span.Seconds()/2, 4),
 					"not the hour since the scan began")
 			}
 			Expect(progress).To(HaveLen(2))

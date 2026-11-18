@@ -114,16 +114,6 @@ func (s scanScope) equal(o scanScope) bool {
 		slices.Equal(s.Episodes, o.Episodes)
 }
 
-func (s scanScope) covers(folder string) bool {
-	if slices.Contains(s.Full, folder) {
-		return true
-	}
-	if folder == "movies" {
-		return len(s.Movies) > 0
-	}
-	return len(s.Episodes) > 0
-}
-
 // only is the part of the scope that lies in folder.
 func (s scanScope) only(folder string) scanScope {
 	var o scanScope
@@ -939,7 +929,10 @@ func scanActive(st scanState, reachable bool, owed *int64) bool {
 // works through a full scan's jobs.
 func folderProgress(st scanState, folder string) (folderScan, bool, error) {
 	var compared, rows int64
-	comparing := !st.finished() && st.scope.covers(folder)
+	// Only a comparison of the whole folder holds the progress back: one
+	// started for a title that changed has a row or two to compare, and
+	// counting those threw a running scan back to 0 % for as long as it took.
+	comparing := !st.finished() && slices.Contains(st.scope.Full, folder)
 	if comparing {
 		cond, args := st.scope.only(folder).where()
 		res, err := query(
@@ -967,21 +960,22 @@ func folderProgress(st scanState, folder string) (folderScan, bool, error) {
 	}
 	waiting, jobs := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
 	// The comparison takes minutes where the jobs take hours, so the time
-	// left is the jobs' alone.
+	// left is the jobs' alone. The pace is the engine's over every folder:
+	// it works through one queue, so a folder whose jobs all wait behind
+	// another's would otherwise have no pace of its own to go by.
 	res, err = query(
-		`SELECT count(*), ifnull(min(at), 0) FROM (
-			SELECT e.at FROM job_ends e JOIN jobs ON jobs.job_id = e.job_id
-			WHERE `+owned+` ORDER BY e.at DESC LIMIT ?)`,
-		append(slices.Clone(args), etaSample)...)
+		`SELECT count(*), ifnull(min(at), 0), ifnull(max(at), 0) FROM (
+			SELECT at FROM job_ends ORDER BY at DESC LIMIT ?)`, etaSample)
 	if err != nil {
 		return folderScan{}, false, err
 	}
-	finished, since := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
+	r := row(res.Rows[0])
+	oldest, newest := time.Unix(r.int(1), 0), time.Unix(r.int(2), 0)
 	p := scan.Progress(compared, rows, waiting, jobs)
 	return folderScan{
 		Progress: math.Round(p*1000) / 1000,
 		ETASeconds: scan.ETASeconds(
-			waiting, finished, now().Sub(time.Unix(since, 0))),
+			waiting, r.int(0), newest.Sub(oldest), now().Sub(newest)),
 	}, comparing || waiting > 0, nil
 }
 

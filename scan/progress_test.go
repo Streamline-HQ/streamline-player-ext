@@ -28,14 +28,23 @@ var _ = Describe("Progress", Label("unit"), func() {
 
 var _ = Describe("ETASeconds", Label("unit"), func() {
 	It("gives the waiting jobs the pace of the last ones to finish", func() {
-		Expect(scan.ETASeconds(3, 2, time.Minute)).To(BeEquivalentTo(90))
-		Expect(scan.ETASeconds(100, 100, 10*time.Minute)).To(BeEquivalentTo(600))
-		Expect(scan.ETASeconds(1, 3, 10*time.Second)).To(BeEquivalentTo(4))
+		Expect(scan.ETASeconds(3, 3, time.Minute, 0)).To(BeEquivalentTo(90))
+		Expect(scan.ETASeconds(100, 101, 10*time.Minute, 0)).To(BeEquivalentTo(600))
 	})
 
-	It("is 0 with nothing waiting, or nothing finished to go by", func() {
-		Expect(scan.ETASeconds(0, 5, time.Minute)).To(BeZero())
-		Expect(scan.ETASeconds(5, 0, time.Minute)).To(BeZero())
-		Expect(scan.ETASeconds(5, 5, 0)).To(BeZero())
+	It("counts down after a finish, and holds once a job's worth is gone", func() {
+		Expect(
+			scan.ETASeconds(3, 3, time.Minute, 10*time.Second),
+		).To(BeEquivalentTo(80))
+		Expect(
+			scan.ETASeconds(3, 3, time.Minute, 30*time.Second),
+		).To(BeEquivalentTo(60))
+		Expect(scan.ETASeconds(3, 3, time.Minute, time.Hour)).To(BeEquivalentTo(60))
+	})
+
+	It("is 0 with nothing waiting, or fewer than two finishes to go by", func() {
+		Expect(scan.ETASeconds(0, 5, time.Minute, 0)).To(BeZero())
+		Expect(scan.ETASeconds(5, 1, time.Minute, 0)).To(BeZero())
+		Expect(scan.ETASeconds(5, 5, 0, 0)).To(BeZero())
 	})
 })

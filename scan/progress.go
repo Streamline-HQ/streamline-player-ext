@@ -21,13 +21,18 @@ func Progress(compared, rows, waiting, jobs int64) float64 {
 }
 
 // ETASeconds is the time the waiting jobs take at the pace of the last ones
-// to finish: finished of them over span. It is 0 while nothing finished yet,
+// to finish: one job every span/(finished-1), span running from the oldest of
+// those finishes to the newest. The time since the newest comes off, up to
+// one job's worth, so the figure counts down between two finishes and then
+// holds until the next. It is 0 with fewer than two finishes to go by,
 // rounded up to whole seconds otherwise. The pace since the scan began would
 // not do: a scan starts on the quick jobs, and every minute spent on a slow
 // one would then add to the time left.
-func ETASeconds(waiting, finished int64, span time.Duration) int64 {
-	if waiting <= 0 || finished <= 0 || span <= 0 {
+func ETASeconds(waiting, finished int64, span, sinceLast time.Duration) int64 {
+	if waiting <= 0 || finished < 2 || span <= 0 {
 		return 0
 	}
-	return int64(math.Ceil(span.Seconds() * float64(waiting) / float64(finished)))
+	each := span.Seconds() / float64(finished-1)
+	spent := math.Max(0, math.Min(sinceLast.Seconds(), each))
+	return int64(math.Ceil(each*float64(waiting) - spent))
 }
