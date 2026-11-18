@@ -418,61 +418,83 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		Expect(sc).To(ContainSubstring("movies"))
 	})
 
-	It("reports each folder's own progress and the time left at its rate", func() {
-		movies := make([]int64, 0, len(stack.Seeded.Movies))
-		for _, m := range stack.Seeded.Movies {
-			movies = append(movies, m.FileID)
-		}
-		slices.Sort(movies)
-		Expect(len(movies)).To(BeNumerically(">=", 2))
-		episodes := make([]int64, 0, len(stack.Seeded.Episodes))
-		for _, e := range stack.Seeded.Episodes {
-			episodes = append(episodes, e.FileID)
-		}
-		Expect(slices.Min(episodes)).To(BeNumerically(">", movies[0]))
+	It(
+		"reports each folder's own progress, and the time left at the pace of the last jobs",
+		func() {
+			movies := make([]int64, 0, len(stack.Seeded.Movies))
+			for _, m := range stack.Seeded.Movies {
+				movies = append(movies, m.FileID)
+			}
+			slices.Sort(movies)
+			Expect(len(movies)).To(BeNumerically(">=", 2))
+			episodes := make([]int64, 0, len(stack.Seeded.Episodes))
+			for _, e := range stack.Seeded.Episodes {
+				episodes = append(episodes, e.FileID)
+			}
+			Expect(slices.Min(episodes)).To(BeNumerically(">", movies[0]))
 
-		elapsed := 2 * time.Minute
-		extExec(
-			`INSERT INTO scan_state(id, cursor, scope, started_at, finished_at)
+			// Two movie jobs finished over the last minute and three wait: 90 s.
+			span := time.Minute
+			film := stack.Seeded.Movies[0]
+			extExec(`DELETE FROM job_ends`)
+			extExec(`DELETE FROM jobs`)
+			for i, state := range []string{"done", "done", "queued", "queued", "queued"} {
+				id := fmt.Sprintf("eta-%d", i)
+				extExec(
+					`INSERT INTO jobs(job_id, kind, path, state)
+				VALUES(?, 'trickplay', ?, ?)`, id, film.Path, state)
+				if state == "done" {
+					extExec(
+						`INSERT INTO job_ends(job_id, at) VALUES(?, ?)`,
+						id, time.Now().Add(-span/time.Duration(i+1)).Unix())
+				}
+			}
+			extExec(
+				`INSERT INTO scan_state(id, cursor, scope, started_at, finished_at)
 			VALUES(1, ?, ?, ?, NULL) ON CONFLICT(id) DO UPDATE SET
 				cursor = excluded.cursor, scope = excluded.scope,
 				started_at = excluded.started_at, finished_at = NULL`,
-			movies[0], `{"full":["movies","series"]}`,
-			time.Now().Add(-elapsed).Unix(),
-		)
-		extExec(
-			`INSERT INTO meta(key, value) VALUES('scan_lease', ?)
+				movies[0], `{"full":["movies","series"]}`,
+				time.Now().Add(-time.Hour).Unix(),
+			)
+			extExec(
+				`INSERT INTO meta(key, value) VALUES('scan_lease', ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-			strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10),
-		)
-		DeferCleanup(func() {
-			extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
-			startScan(nil)
-			waitScanned()
-		})
+				strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10),
+			)
+			DeferCleanup(func() {
+				extExec(`DELETE FROM job_ends WHERE job_id LIKE 'eta-%'`)
+				extExec(`DELETE FROM jobs WHERE job_id LIKE 'eta-%'`)
+				extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
+				startScan(nil)
+				waitScanned()
+			})
 
-		var lib adminLibrary
-		getJSON("/admin/library", key(stack.AdminKey), &lib)
-		progress := map[string]float64{}
-		for _, f := range lib.Folders {
-			Expect(f.Scan).NotTo(BeNil(), f.ID)
-			p := f.Scan.Progress
-			progress[f.ID] = p
-			Expect(p).To(BeNumerically("<", 1), f.ID)
-			if p == 0 {
-				Expect(f.Scan.ETASeconds).To(BeZero(), f.ID)
-				continue
+			var lib adminLibrary
+			getJSON("/admin/library", key(stack.AdminKey), &lib)
+			progress := map[string]float64{}
+			for _, f := range lib.Folders {
+				Expect(f.Scan).NotTo(BeNil(), f.ID)
+				p := f.Scan.Progress
+				progress[f.ID] = p
+				Expect(p).To(BeNumerically("<", 1), f.ID)
+				if f.ID == "series" {
+					Expect(
+						f.Scan.ETASeconds,
+					).To(BeZero(), "no job of its own to go by")
+					continue
+				}
+				Expect(f.Scan.ETASeconds).To(
+					BeNumerically("~", 3*span.Seconds()/2, 3),
+					"not the hour since the scan began")
 			}
-			Expect(f.Scan.ETASeconds).To(BeNumerically(
-				"~", elapsed.Seconds()*(1-p)/p, 3,
-			), f.ID)
-		}
-		Expect(progress).To(HaveLen(2))
-		Expect(progress["movies"]).To(
-			BeNumerically(">", progress["series"]),
-			"movies are partly compared, series not yet",
-		)
-	})
+			Expect(progress).To(HaveLen(2))
+			Expect(progress["movies"]).To(
+				BeNumerically(">", progress["series"]),
+				"movies are partly compared, series not yet",
+			)
+		},
+	)
 
 	It("keeps a scan's progress when one title changes meanwhile", func() {
 		film, episode := stack.Seeded.Movies[0], stack.Seeded.Episodes[0]
@@ -514,8 +536,6 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		Expect(engineCall(http.MethodPost, "/v1/jobs", batch)).To(
 			BeNumerically("<", http.StatusBadRequest),
 		)
-		started := time.Now().Add(-2 * time.Minute).Unix()
-		extExec(`UPDATE scan_state SET started_at = ?`, started)
 		DeferCleanup(func() {
 			for _, id := range ids {
 				engineCall(http.MethodDelete, "/v1/jobs/"+id, nil)
@@ -534,23 +554,16 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(status).To(Equal(http.StatusOK), string(raw))
-		state := func() (string, int64, bool) {
+		Eventually(func() bool {
 			db := stack.Ext()
 			defer db.Close()
 			var scope string
-			var at int64
 			var finished bool
 			ExpectWithOffset(1, db.QueryRow(
-				`SELECT scope, started_at, finished_at IS NOT NULL FROM scan_state`,
-			).Scan(&scope, &at, &finished)).To(Succeed())
-			return scope, at, finished
-		}
-		Eventually(func() bool {
-			scope, _, finished := state()
+				`SELECT scope, finished_at IS NOT NULL FROM scan_state`,
+			).Scan(&scope, &finished)).To(Succeed())
 			return strings.Contains(scope, `"movies":[`) && finished
 		}, time.Minute, 250*time.Millisecond).Should(BeTrue())
-		_, at, _ := state()
-		Expect(at).To(Equal(started), "the time left counts from the scan's start")
 
 		var now adminLibrary
 		getJSON("/admin/library", key(stack.AdminKey), &now)

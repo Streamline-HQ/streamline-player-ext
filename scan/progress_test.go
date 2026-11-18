@@ -27,16 +27,15 @@ var _ = Describe("Progress", Label("unit"), func() {
 })
 
 var _ = Describe("ETASeconds", Label("unit"), func() {
-	It("extrapolates the rate so far and rounds up", func() {
-		Expect(scan.ETASeconds(time.Minute, 0.5)).To(BeEquivalentTo(60))
-		Expect(scan.ETASeconds(time.Minute, 0.75)).To(BeEquivalentTo(20))
-		Expect(scan.ETASeconds(10*time.Second, 0.3)).To(BeEquivalentTo(24))
+	It("gives the waiting jobs the pace of the last ones to finish", func() {
+		Expect(scan.ETASeconds(3, 2, time.Minute)).To(BeEquivalentTo(90))
+		Expect(scan.ETASeconds(100, 100, 10*time.Minute)).To(BeEquivalentTo(600))
+		Expect(scan.ETASeconds(1, 3, 10*time.Second)).To(BeEquivalentTo(4))
 	})
 
-	It("has nothing to say without measurable progress or once done", func() {
-		Expect(scan.ETASeconds(time.Minute, 0)).To(BeZero())
-		Expect(scan.ETASeconds(time.Minute, scan.Measurable/2)).To(BeZero())
-		Expect(scan.ETASeconds(time.Minute, 1)).To(BeZero())
-		Expect(scan.ETASeconds(0, 0.5)).To(BeZero())
+	It("is 0 with nothing waiting, or nothing finished to go by", func() {
+		Expect(scan.ETASeconds(0, 5, time.Minute)).To(BeZero())
+		Expect(scan.ETASeconds(5, 0, time.Minute)).To(BeZero())
+		Expect(scan.ETASeconds(5, 5, 0)).To(BeZero())
 	})
 })

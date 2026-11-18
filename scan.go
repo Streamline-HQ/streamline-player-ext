@@ -52,6 +52,9 @@ const (
 	pageSize = 200
 	// A request has 30 s; the comparison stops starting pages after this.
 	compareBudget = 20 * time.Second
+	// etaSample is how many of the last finished jobs set the pace the time
+	// left goes by: enough to mix the quick kinds with the slow ones.
+	etaSample = 100
 	// maxID bounds an id window that runs to the end of the view. It stays
 	// below 2^53 so it survives the host's JSON numbers.
 	maxID = 1 << 52
@@ -266,15 +269,8 @@ func registerScope(scope scanScope) error {
 			return err
 		}
 		if st.finished() {
-			// The engine may still be working through an earlier scan's jobs
-			// when a change to one title starts a comparison. The time left
-			// is measured from that scan's start, so it stays.
-			started := now().Unix()
-			if st.exists && jobsWaiting() > 0 {
-				started = st.startedAt
-			}
 			return saveScanState(scanState{
-				exists: true, scope: scope.normalized(), startedAt: started,
+				exists: true, scope: scope.normalized(), startedAt: now().Unix(),
 			})
 		}
 		merged := st.scope.merge(scope)
@@ -903,14 +899,6 @@ func adminLibrary(c *call) sdk.Response {
 	return jsonOK(http.StatusOK, view)
 }
 
-func jobsWaiting() int64 {
-	res, err := query(`SELECT count(*) FROM jobs WHERE state = ?`, jobQueued)
-	if err != nil || len(res.Rows) == 0 {
-		return 0
-	}
-	return row(res.Rows[0]).int(0)
-}
-
 // scanActive says whether a scan is running: the comparison has rows left, or
 // the engine has jobs to finish. Once it is over, the finished jobs are
 // cleared, and so are those still waiting here when the engine owes none: it
@@ -924,6 +912,7 @@ func scanActive(st scanState, reachable bool, owed *int64) bool {
 	// answer and this delete would be lost.
 	if reachable && owed != nil && *owed == 0 {
 		_ = exec(`DELETE FROM jobs`)
+		_ = exec(`DELETE FROM job_ends`)
 		return false
 	}
 	res, err := query(
@@ -937,14 +926,15 @@ func scanActive(st scanState, reachable bool, owed *int64) bool {
 	}
 	if total > 0 {
 		_ = exec(`DELETE FROM jobs WHERE state != ?`, jobQueued)
+		_ = exec(`DELETE FROM job_ends`)
 	}
 	return false
 }
 
 // folderProgress is how far the running scan is on one folder, and whether
 // the folder has anything left: the rows of the comparison's scope there, the
-// jobs queued for the folder's files, and the time left at the rate the scan
-// went so far. The jobs count for the whole folder, not for the scope: a
+// jobs queued for the folder's files, and the time left at the pace of the
+// last jobs to finish. The jobs count for the whole folder, not for the scope: a
 // change to one title starts a comparison of its own while the engine still
 // works through a full scan's jobs.
 func folderProgress(st scanState, folder string) (folderScan, bool, error) {
@@ -976,10 +966,22 @@ func folderProgress(st scanState, folder string) (folderScan, bool, error) {
 		return folderScan{}, false, err
 	}
 	waiting, jobs := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
+	// The comparison takes minutes where the jobs take hours, so the time
+	// left is the jobs' alone.
+	res, err = query(
+		`SELECT count(*), ifnull(min(at), 0) FROM (
+			SELECT e.at FROM job_ends e JOIN jobs ON jobs.job_id = e.job_id
+			WHERE `+owned+` ORDER BY e.at DESC LIMIT ?)`,
+		append(slices.Clone(args), etaSample)...)
+	if err != nil {
+		return folderScan{}, false, err
+	}
+	finished, since := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
 	p := scan.Progress(compared, rows, waiting, jobs)
 	return folderScan{
-		Progress:   math.Round(p*1000) / 1000,
-		ETASeconds: scan.ETASeconds(now().Sub(time.Unix(st.startedAt, 0)), p),
+		Progress: math.Round(p*1000) / 1000,
+		ETASeconds: scan.ETASeconds(
+			waiting, finished, now().Sub(time.Unix(since, 0))),
 	}, comparing || waiting > 0, nil
 }
 

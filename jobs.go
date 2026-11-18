@@ -40,6 +40,11 @@ func init() {
 			path TEXT NOT NULL,
 			state TEXT NOT NULL
 		)`,
+		// When each job finished, for the pace a scan's time left goes by.
+		`CREATE TABLE IF NOT EXISTS job_ends(
+			job_id TEXT PRIMARY KEY,
+			at INTEGER NOT NULL
+		) WITHOUT ROWID`,
 	)
 	handleRoute(http.MethodPost, engineJobsPath+"{id}", Public, postEngineJob)
 	handleRoute(http.MethodPost, engineContinuePath, Public, postEngineContinue)
@@ -402,7 +407,7 @@ func settleJob(id, kind, path, state string, result json.RawMessage) {
 		return
 	}
 	if kind != "analyze" && kind != "intro" {
-		_ = exec(`UPDATE jobs SET state = ? WHERE job_id = ?`, jobDone, id)
+		markJobDone(id)
 		return
 	}
 	if kind == "analyze" && supersededAnalysis(id, path) {
@@ -422,7 +427,14 @@ func settleJob(id, kind, path, state string, result json.RawMessage) {
 		return
 	}
 	_, _ = engineDo(http.MethodDelete, "/v1/jobs/"+id, nil, nil)
+	markJobDone(id)
+}
+
+func markJobDone(id string) {
 	_ = exec(`UPDATE jobs SET state = ? WHERE job_id = ?`, jobDone, id)
+	_ = exec(
+		`INSERT INTO job_ends(job_id, at) VALUES(?, ?)
+		ON CONFLICT(job_id) DO NOTHING`, id, now().Unix())
 }
 
 // supersededAnalysis says whether the file changed since the analyze job id
