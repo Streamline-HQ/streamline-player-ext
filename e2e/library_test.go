@@ -31,7 +31,12 @@ type libTitle struct {
 	Certification string   `json:"certification"`
 	Network       string   `json:"network"`
 	TotalSeasons  *int     `json:"total_seasons"`
-	FileSummary   struct {
+	Episodes      *struct {
+		Total   int64 `json:"total"`
+		Watched int64 `json:"watched"`
+		Started int64 `json:"started"`
+	} `json:"episodes"`
+	FileSummary struct {
 		FileCount  int64  `json:"file_count"`
 		Resolution string `json:"resolution"`
 		Codec      string `json:"codec"`
@@ -263,6 +268,46 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 		Expect(two.Seasons).To(HaveLen(1))
 		Expect(two.Seasons[0].Number).To(BeEquivalentTo(1))
 		Expect(two.Seasons[0].Episodes).To(HaveLen(1))
+	})
+
+	It("counts the signed-in user's watched and started episodes of a show", func() {
+		severance := func(k string) libTitle {
+			var list libList
+			getLib("/series", k, &list)
+			for _, t := range list.Items {
+				if t.Title == "Severance" {
+					return t
+				}
+			}
+			Fail("Severance is not listed")
+			return libTitle{}
+		}
+		mark := func(watched bool) {
+			status, raw := call(
+				http.MethodPut,
+				"/watchstate/"+strconv.FormatInt(
+					stack.Seeded.Episodes[0].FileID,
+					10,
+				),
+				key(k),
+				map[string]any{"watched": watched},
+			)
+			Expect(status).To(Equal(http.StatusOK), string(raw))
+		}
+		DeferCleanup(mark, false)
+
+		counts := func(k string) [3]int64 {
+			e := severance(k).Episodes
+			Expect(e).NotTo(BeNil())
+			return [3]int64{e.Total, e.Watched, e.Started}
+		}
+		Expect(counts(k)).To(Equal([3]int64{2, 0, 0}))
+		mark(true)
+		Expect(counts(k)).To(Equal([3]int64{2, 1, 1}))
+		other := stack.SignInApp(stack.NewUser("library-other"), "library-other-app")
+		Expect(
+			counts(other),
+		).To(Equal([3]int64{2, 0, 0}), "another user's marks stay theirs")
 	})
 
 	It("leaves out a title Streamline has no file for", func() {

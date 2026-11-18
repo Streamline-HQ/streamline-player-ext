@@ -75,9 +75,18 @@ type title struct {
 	MediaFiles    []mediaFileRef `json:"media_files,omitempty"`
 	Network       string         `json:"network,omitempty"`
 	TotalSeasons  *int           `json:"total_seasons,omitempty"`
+	Episodes      *episodeCounts `json:"episodes,omitempty"`
 	FirstAired    string         `json:"first_aired,omitempty"`
 	Seasons       []season       `json:"seasons,omitempty"`
 	Cast          []castMember   `json:"cast,omitempty"`
+}
+
+// episodeCounts is where the signed-in user stands in a series, counted over
+// the episodes the player lists: Started includes Watched.
+type episodeCounts struct {
+	Total   int64 `json:"total"`
+	Watched int64 `json:"watched"`
+	Started int64 `json:"started"`
 }
 
 type titleList struct {
@@ -110,11 +119,12 @@ JOIN (
 ) a ON a.owner = m.id
 LEFT JOIN streamline_video_files f ON f.id = a.first`
 
-const seriesSelect = `SELECT s.id, s.title, s.original_title, s.year, s.overview,
+const seriesColumns = `s.id, s.title, s.original_title, s.year, s.overview,
 	s.runtime, s.rating, s.genres, s.monitored, s.certification, s.added_at,
 	` + seasonsWithFiles + `,
-	s.status, s.network, s.first_aired, ` + titleFileColumns + `
-FROM streamline_series s
+	s.status, s.network, s.first_aired, ` + titleFileColumns
+
+const seriesFrom = `FROM streamline_series s
 JOIN (
 	SELECT se.series_id AS owner, count(*) AS cnt, sum(vf.size) AS size,
 		min(vf.id) AS first
@@ -126,18 +136,52 @@ JOIN (
 ) a ON a.owner = s.id
 LEFT JOIN streamline_video_files f ON f.id = a.first`
 
-func listMovies(c *call) sdk.Response { return listTitles(movieSelect, false) }
+const seriesSelect = `SELECT ` + seriesColumns + "\n" + seriesFrom
 
-func listSeries(c *call) sdk.Response { return listTitles(seriesSelect, true) }
+// episodeProgress counts, per series, a user's episodes by their first file,
+// the one seasonsOf hands the player as media_file_id and the one it marks.
+const episodeProgress = `SELECT se.series_id AS owner, count(*) AS total,
+	count(CASE WHEN w.watched = 1 THEN 1 END) AS watched,
+	count(CASE WHEN w.watched = 1 OR w.position > 0 THEN 1 END) AS started
+FROM (
+	SELECT episode_id, min(id) AS file FROM streamline_video_files
+	WHERE missing = 0 AND episode_id IS NOT NULL
+	GROUP BY episode_id
+) ep
+JOIN streamline_episodes e ON e.id = ep.episode_id
+JOIN streamline_seasons se ON se.id = e.season_id
+LEFT JOIN watch w ON w.media_id = ep.file AND w.user_id = ?
+GROUP BY se.series_id`
 
-func listTitles(selectSQL string, show bool) sdk.Response {
-	res, err := query(selectSQL + " ORDER BY 1")
+const seriesListSelect = `SELECT ` + seriesColumns + `,
+	coalesce(p.total, 0), coalesce(p.watched, 0), coalesce(p.started, 0)
+` + seriesFrom + `
+LEFT JOIN (` + episodeProgress + `) p ON p.owner = s.id`
+
+func listMovies(c *call) sdk.Response {
+	res, err := query(movieSelect + " ORDER BY 1")
 	if err != nil {
 		return libraryFailed(err)
 	}
 	out := titleList{Items: make([]title, 0, len(res.Rows)), Total: len(res.Rows)}
 	for _, r := range res.Rows {
-		out.Items = append(out.Items, titleOf(row(r), show))
+		out.Items = append(out.Items, titleOf(row(r), false))
+	}
+	return jsonOK(http.StatusOK, out)
+}
+
+func listSeries(c *call) sdk.Response {
+	res, err := query(seriesListSelect+" ORDER BY 1", c.User.ID)
+	if err != nil {
+		return libraryFailed(err)
+	}
+	out := titleList{Items: make([]title, 0, len(res.Rows)), Total: len(res.Rows)}
+	for _, r := range res.Rows {
+		t := titleOf(row(r), true)
+		t.Episodes = &episodeCounts{
+			Total: row(r).int(23), Watched: row(r).int(24), Started: row(r).int(25),
+		}
+		out.Items = append(out.Items, t)
 	}
 	return jsonOK(http.StatusOK, out)
 }
