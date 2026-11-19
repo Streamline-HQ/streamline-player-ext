@@ -93,6 +93,35 @@ var _ = Describe("home", Label("e2e"), func() {
 		Expect(feed.Featured[0].Episodes).NotTo(BeEmpty())
 	})
 
+	It("puts the next episode first once the last one played is finished", func() {
+		user := stack.NewUser("homenext")
+		k := stack.SignInApp(user, "home-next-app")
+		episode := firstVideoFile("episode_media_files")
+		seedWatch(user.ID, episode, 0, 0, true, time.Now().UnixMilli())
+
+		var feed homeFeed
+		getJSON("/home", key(k), &feed)
+		Expect(feed.Featured).NotTo(BeEmpty())
+		Expect(feed.Featured[0].Kind).To(Equal("series"))
+		Expect(feed.Featured[0].Reason).To(Equal("next"))
+		Expect(feed.Featured[0].Season).To(HaveValue(Equal(int64(1))))
+	})
+
+	It("leaves a show out of next when no later episode has a file", func() {
+		user := stack.NewUser("homenonext")
+		k := stack.SignInApp(user, "home-nonext-app")
+		now := time.Now().UnixMilli()
+		for i, ep := range stack.Seeded.Episodes {
+			seedWatch(user.ID, ep.FileID, 0, 0, true, now+int64(i))
+		}
+
+		var feed homeFeed
+		getJSON("/home", key(k), &feed)
+		for _, f := range feed.Featured {
+			Expect(f.Reason).NotTo(Equal("next"))
+		}
+	})
+
 	It("gives an empty library empty featured and arrivals", func() {
 		lib := filepath.Join(GinkgoT().TempDir(), "empty.json")
 		Expect(

@@ -90,12 +90,19 @@ func getHome(c *call) sdk.Response {
 	if err != nil {
 		return internalError("reading continue watching", err)
 	}
-	for _, f := range cont {
-		add(f)
-	}
 	fresh, err := newEpisodes(c.User.ID)
 	if err != nil {
 		return internalError("reading new episodes", err)
+	}
+	freshBy := map[int64]featured{}
+	for _, f := range fresh {
+		freshBy[f.ID] = f
+	}
+	for _, f := range cont {
+		if n, ok := freshBy[f.ID]; ok && f.Reason == "next" {
+			f = n
+		}
+		add(f)
 	}
 	for _, f := range fresh {
 		add(f)
@@ -119,15 +126,18 @@ func getHome(c *call) sdk.Response {
 	})
 }
 
+// continueWatching lists the unfinished plays, newest first. A series is
+// decided by its newest play: unfinished, it continues; finished, the next
+// episode with a file the user has not watched is up next.
 func continueWatching(userID uint32) ([]featured, error) {
 	res, err := query(
-		`SELECT f.movie_id, se.series_id, se.number
+		`SELECT f.movie_id, se.series_id, se.number, e.number, w.watched
 		FROM watch w
 		JOIN streamline_video_files f ON f.id = w.media_id
 		LEFT JOIN streamline_episodes e ON e.id = f.episode_id
 		LEFT JOIN streamline_seasons se ON se.id = e.season_id
-		WHERE w.user_id = ? AND w.watched = 0 AND w.position > 0
-			AND w.position < ? * w.duration
+		WHERE w.user_id = ? AND (w.watched = 1 AND se.series_id IS NOT NULL
+			OR w.watched = 0 AND w.position > 0 AND w.position < ? * w.duration)
 		ORDER BY w.updated_at DESC, w.rowid DESC`,
 		userID, watchedAt,
 	)
@@ -135,22 +145,62 @@ func continueWatching(userID uint32) ([]featured, error) {
 		return nil, err
 	}
 	var out []featured
+	decided := map[int64]bool{}
 	for _, raw := range res.Rows {
+		if len(out) == featuredMax {
+			break
+		}
 		r := row(raw)
-		switch {
-		case r[0] != nil:
+		if r[0] != nil {
 			out = append(
 				out,
 				featured{Kind: "movies", ID: r.int(0), Reason: "continue"},
 			)
-		case r[1] != nil:
-			season := r.int(2)
+			continue
+		}
+		series := r.int(1)
+		if decided[series] {
+			continue
+		}
+		decided[series] = true
+		season := r.int(2)
+		if r.int(4) == 0 {
 			out = append(out, featured{
-				Kind: "series", ID: r.int(1), Reason: "continue", Season: &season,
+				Kind: "series", ID: series, Reason: "continue", Season: &season,
+			})
+			continue
+		}
+		next, ok, err := nextUp(userID, series, season, r.int(3))
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, featured{
+				Kind: "series", ID: series, Reason: "next", Season: &next,
 			})
 		}
 	}
 	return out, nil
+}
+
+// nextUp is the season of the first episode after season/episode that has a
+// file the user has not watched.
+func nextUp(userID uint32, series, season, episode int64) (int64, bool, error) {
+	res, err := query(
+		`SELECT se.number FROM streamline_episodes e
+		JOIN streamline_seasons se ON se.id = e.season_id
+		WHERE se.series_id = ? AND (se.number > ? OR se.number = ? AND e.number > ?)
+			AND EXISTS(SELECT 1 FROM streamline_video_files f
+				WHERE f.episode_id = e.id AND f.missing = 0 AND NOT EXISTS(
+					SELECT 1 FROM watch w
+					WHERE w.user_id = ? AND w.media_id = f.id AND w.watched = 1))
+		ORDER BY se.number, e.number LIMIT 1`,
+		series, season, season, episode, userID,
+	)
+	if err != nil || len(res.Rows) == 0 {
+		return 0, false, err
+	}
+	return row(res.Rows[0]).int(0), true, nil
 }
 
 // newEpisodes lists the shows the user has watched that gained an episode
