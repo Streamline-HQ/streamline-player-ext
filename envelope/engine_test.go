@@ -8,14 +8,14 @@ import (
 )
 
 var _ = g.Describe("an engine failure", g.Label("unit"), func() {
-	g.It("moves retry_after inside error and keeps the status", func() {
+	g.It("moves retry_after and need inside error and keeps the status", func() {
 		status, body := FromEngine(
 			503,
-			[]byte(`{"code":"transcode_limit","message":"m","retry_after":5}`),
+			[]byte(`{"code":"transcode_limit","message":"m","retry_after":5,"need":"n"}`),
 		)
 		Expect(status).To(Equal(503))
 		Expect(string(body)).To(Equal(
-			`{"error":{"code":"transcode_limit","message":"m","retry_after":5}}`,
+			`{"error":{"code":"transcode_limit","message":"m","retry_after":5,"need":"n"}}`,
 		))
 	})
 
