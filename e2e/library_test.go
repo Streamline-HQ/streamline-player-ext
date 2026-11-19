@@ -465,7 +465,7 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 			Expect(string(raw)).To(Equal("show-jpeg"))
 		})
 
-		It("sets the type and a day's private cache", func() {
+		It("sets the type and has the player revalidate", func() {
 			req, err := http.NewRequest(http.MethodGet,
 				stack.BaseURL+harness.MountBase+"/posters/movies/1/poster.jpg", nil)
 			Expect(err).NotTo(HaveOccurred())
@@ -474,7 +474,33 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 			defer resp.Body.Close()
 			Expect(resp.Header.Get("Content-Type")).To(Equal("image/jpeg"))
 			Expect(resp.Header.Get("Cache-Control")).
-				To(Equal("private, max-age=86400"))
+				To(Equal("private, no-cache"))
+		})
+
+		It("answers a poster unchanged since the player's copy with 304", func() {
+			get := func(since string) *http.Response {
+				GinkgoHelper()
+				req, err := http.NewRequest(
+					http.MethodGet,
+					stack.BaseURL+harness.MountBase+"/posters/movies/1/poster.jpg",
+					nil,
+				)
+				Expect(err).NotTo(HaveOccurred())
+				if since != "" {
+					req.Header.Set("If-Modified-Since", since)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.Body.Close()).To(Succeed())
+				return resp
+			}
+			first := get("")
+			Expect(first.Header.Get("Last-Modified")).NotTo(BeEmpty())
+
+			resp := get(first.Header.Get("Last-Modified"))
+			Expect(resp.StatusCode).To(Equal(http.StatusNotModified))
+			Expect(resp.Header.Get("Cache-Control")).
+				To(Equal("private, no-cache"))
 		})
 
 		Describe("card size", func() {

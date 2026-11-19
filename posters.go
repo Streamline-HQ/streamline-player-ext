@@ -64,9 +64,12 @@ func getPoster(c *call) sdk.Response {
 			hostPath = thumb
 		}
 	}
+	// One URL holds another picture once core replaces the poster, a
+	// provider names another backdrop or a deleted title's id is reused: the
+	// player revalidates every time and gets a 304 while it is unchanged.
 	return sdk.Response{
 		Headers: map[string][]string{
-			"Cache-Control": {"private, max-age=86400"},
+			"Cache-Control": {"private, no-cache"},
 		},
 		SendFile: &sdk.SendFile{
 			Path: hostPath, ContentType: posterTypes[path.Ext(file)],

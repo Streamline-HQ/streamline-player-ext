@@ -31,7 +31,7 @@ var _ = Describe("backdrops", Label("e2e"), Ordered, func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			Expect(resp.Header.Get("Content-Type")).To(Equal("image/jpeg"))
 			Expect(resp.Header.Get("Cache-Control")).
-				To(Equal("private, max-age=86400"))
+				To(Equal("private, no-cache"))
 			raw, err := io.ReadAll(resp.Body)
 			Expect(err).NotTo(HaveOccurred())
 			return string(raw)
