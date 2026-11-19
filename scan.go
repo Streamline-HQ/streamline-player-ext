@@ -1055,7 +1055,9 @@ func folderProgress(
 func adminScan(c *call) sdk.Response {
 	rememberFolders(c.R)
 	var body struct {
-		FolderID string `json:"folder_id"`
+		FolderID string  `json:"folder_id"`
+		Movies   []int64 `json:"movies"`
+		Episodes []int64 `json:"episodes"`
 	}
 	if len(c.R.Body) > 0 {
 		if err := decodeBody(c, &body); err != nil {
@@ -1063,7 +1065,10 @@ func adminScan(c *call) sdk.Response {
 		}
 	}
 	scope := scanScope{Full: []string{"movies", "series"}}
-	if body.FolderID != "" {
+	switch {
+	case len(body.Movies) > 0 || len(body.Episodes) > 0:
+		scope = scanScope{Movies: body.Movies, Episodes: body.Episodes}
+	case body.FolderID != "":
 		if body.FolderID != "movies" && body.FolderID != "series" {
 			return libraryNotFound()
 		}

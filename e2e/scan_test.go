@@ -661,6 +661,46 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		Expect(storedAnalyses()).To(HaveKeyWithValue(film.Path, version))
 	})
 
+	It("scans the movies and episodes it is given", func() {
+		film, ep := stack.Seeded.Movies[0], stack.Seeded.Episodes[0]
+		versions := map[string]int{}
+		paths := []string{film.Path, ep.Path}
+		lost := make([]string, 0, 3*len(paths))
+		for _, path := range paths {
+			var version int
+			var analysis string
+			db := stack.Ext()
+			Expect(db.QueryRow(
+				`SELECT version, json FROM analysis WHERE path = ?`, path,
+			).Scan(&version, &analysis)).To(Succeed())
+			Expect(db.Close()).To(Succeed())
+			versions[path] = version
+			extExec(`DELETE FROM analysis WHERE path = ?`, path)
+			DeferCleanup(
+				extExec,
+				`INSERT INTO analysis(path, version, json) VALUES(?, ?, ?)
+				ON CONFLICT(path) DO NOTHING`,
+				path, version, analysis,
+			)
+			for _, kind := range []string{"analyze", "subtitles", "trickplay"} {
+				lost = append(lost, jobIDOf(kind, path))
+			}
+		}
+		Expect(stack.ReplaceEngine(lost...)).To(Succeed())
+
+		startScan(map[string]any{
+			"movies": []int64{film.OwnerID}, "episodes": []int64{ep.OwnerID},
+		})
+		for _, id := range lost {
+			status, _ := engineJob(id)
+			Expect(status).To(Equal(http.StatusOK), scanDump)
+		}
+		for path, version := range versions {
+			Eventually(storedAnalyses, time.Minute, 250*time.Millisecond).
+				Should(HaveKeyWithValue(path, version))
+		}
+	})
+
 	It("checks a season's intro again only while its files went unchecked", func() {
 		seasonID, files := seasonOf(stack.Seeded.Episodes[0])
 		Expect(len(files)).To(BeNumerically(">=", 2))
