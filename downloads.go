@@ -138,7 +138,7 @@ func createDownload(c *call) sdk.Response {
 	}
 	id := downloadJobID(base, c.Device.ID, body.Quality, audio)
 	spec := map[string]any{
-		"job_id": id, "type": "download", "priority": "interactive",
+		"job_id": id, "type": "download", "priority": "background",
 		"path": f.Path, "capabilities": body.Capabilities,
 		"audio_indexes": audio,
 	}
