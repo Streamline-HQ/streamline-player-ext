@@ -564,12 +564,7 @@ func analysisOf(f playFile, guest string) (json.RawMessage, error) {
 	if err != nil {
 		return nil, nil //nolint:nilerr // a file that cannot be read has no analysis
 	}
-	// A scan may hold this job in the engine's background queue, behind
-	// thousands of others. Asking for it as interactive moves it to the front;
-	// for a job the engine does not have, or already runs, this changes nothing.
-	if _, _, err := engineFetch(http.MethodPost, "/v1/jobs", map[string]any{
-		"job_id": id, "type": "analyze", "priority": "interactive", "path": f.Path,
-	}); err != nil {
+	if err := promote(id, "analyze", f.Path); err != nil {
 		return nil, err
 	}
 	deadline := now().Add(analysisWait)
@@ -640,6 +635,9 @@ func mediaTracks(c *call) sdk.Response {
 	}
 
 	subs, subsJob, err := sideJob("subtitles", f, guest)
+	if err == nil && subs.State == "queued" {
+		err = promote(subsJob, "subtitles", f.Path)
+	}
 	if err != nil {
 		return engineUnavailable()
 	}
@@ -687,7 +685,7 @@ func mediaTracks(c *call) sdk.Response {
 	}
 	intro, credits := markersSource(f.ID)
 	return jsonOK(http.StatusOK, map[string]any{
-		"preparing": subs.State != "done",
+		"preparing": subs.State == "queued" || subs.State == "running",
 		"container": a.Container,
 		"video":     video,
 		"chapters":  nonNil(a.Chapters),
@@ -715,4 +713,14 @@ func sideJob(kind string, f playFile, guest string) (jobStatus, string, error) {
 	}
 	js, err := jobState(id, kind, f.Path, "background")
 	return js, id, err
+}
+
+// promote asks the engine for a job as interactive. A scan may hold it in the
+// background queue, behind thousands of others: this moves it to the front.
+// A job the engine does not have is submitted; one running or done is left as is.
+func promote(id, kind, path string) error {
+	_, _, err := engineFetch(http.MethodPost, "/v1/jobs", map[string]any{
+		"job_id": id, "type": kind, "priority": "interactive", "path": path,
+	})
+	return err
 }
