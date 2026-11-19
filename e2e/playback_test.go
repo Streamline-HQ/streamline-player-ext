@@ -331,6 +331,26 @@ var _ = Describe("playback", Label("e2e"), Ordered, func() {
 		Expect(status).To(Equal(http.StatusNotFound))
 	})
 
+	It(
+		"stops a session the engine kept after its row was gone, on the second look",
+		func() {
+			s := mustStart(k, movie)
+			extExec(`DELETE FROM sessions WHERE id = ?`, s.SessionID)
+			look := func() {
+				extExec(
+					`UPDATE meta SET value = '0' WHERE key = 'engine_reconcile_at'`,
+				)
+				status, _ := call(http.MethodGet, "/playback/status", key(k), nil)
+				Expect(status).To(Equal(http.StatusOK))
+			}
+			// One look may fall between a start's two writes: it only takes note.
+			look()
+			Expect(engineSessionIDs()).To(ContainElement(s.SessionID))
+			look()
+			Expect(engineSessionIDs()).NotTo(ContainElement(s.SessionID))
+		},
+	)
+
 	It("forgets a silent session even when the restart halted it", func() {
 		s := mustStart(k, movie)
 		extExec(
