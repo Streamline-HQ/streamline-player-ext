@@ -2,7 +2,9 @@ package main
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/datahearth/streamline/extensions/sdk"
@@ -31,6 +33,7 @@ func init() {
 	)
 	handleRoute(http.MethodGet, "/watchstate", Any, listWatchState)
 	handleRoute(http.MethodPut, "/watchstate/{mediaId}", Any, putWatchState)
+	handleRoute(http.MethodPost, "/admin/watchstate/import", Admin, importWatchState)
 }
 
 const watchColumns = `w.media_id, w.position, w.duration, w.watched,
@@ -158,15 +161,136 @@ func applyOffline(
 	mediaID, position, duration int64,
 	at time.Time,
 ) error {
-	return exec(
+	_, err := saveNewer(
+		userID, mediaID, position, duration,
+		duration > 0 && float64(position) >= watchedAt*float64(duration), at,
+	)
+	return err
+}
+
+// saveNewer reports whether the state was written: one older than what the
+// server holds is dropped.
+func saveNewer(
+	userID uint32,
+	mediaID, position, duration int64,
+	watched bool,
+	at time.Time,
+) (bool, error) {
+	res, err := run(
 		`INSERT INTO watch(user_id, media_id, position, duration, watched,
 			updated_at) VALUES(?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, media_id) DO UPDATE SET
 			position = excluded.position, duration = excluded.duration,
 			watched = excluded.watched, updated_at = excluded.updated_at
 		WHERE excluded.updated_at > watch.updated_at`,
-		userID, mediaID, position, duration,
-		duration > 0 && float64(position) >= watchedAt*float64(duration),
-		at.UnixMilli(),
+		userID, mediaID, position, duration, watched, at.UnixMilli(),
 	)
+	return res.RowsAffected > 0, err
+}
+
+type importedWatch struct {
+	Email    string `json:"email"`
+	TmdbID   int64  `json:"tmdb_id"`
+	TvdbID   int64  `json:"tvdb_id"`
+	Season   int64  `json:"season"`
+	Episode  int64  `json:"episode"`
+	Position int64  `json:"position_seconds"`
+	Duration int64  `json:"duration_seconds"`
+	Watched  bool   `json:"watched"`
+	At       string `json:"at"`
+}
+
+// importWatchState takes watch state read from another server. A movie is
+// named by tmdb_id, an episode by its series' tvdb_id with season and episode,
+// and the state lands on every file of the title.
+func importWatchState(c *call) sdk.Response {
+	var body struct {
+		Items []importedWatch `json:"items"`
+	}
+	invalid := fail(http.StatusBadRequest, "invalid_request",
+		"Each item must carry email, at, and tmdb_id or tvdb_id")
+	if err := decodeBody(c, &body); err != nil {
+		return invalid
+	}
+	times := make([]time.Time, len(body.Items))
+	for i, it := range body.Items {
+		at, ok := parseOfflineTime(it.At)
+		if !ok || it.Email == "" || (it.TmdbID > 0) == (it.TvdbID > 0) ||
+			it.Position < 0 || it.Duration < 0 {
+			return invalid
+		}
+		times[i] = at
+	}
+
+	logins, err := query(`SELECT email, user_id FROM streamline_user_logins`)
+	if err != nil {
+		return internalError("listing logins", err)
+	}
+	users := make(map[string]uint32, len(logins.Rows))
+	for _, r := range logins.Rows {
+		//nolint:gosec // a core user id fits
+		users[row(r).str(0)] = uint32(row(r).int(1))
+	}
+
+	var imported, older, unknownTitles int
+	unknownUsers := []string{}
+	for i, it := range body.Items {
+		email := strings.ToLower(it.Email)
+		userID, ok := users[email]
+		if !ok {
+			if !slices.Contains(unknownUsers, email) {
+				unknownUsers = append(unknownUsers, email)
+			}
+			continue
+		}
+		var files sdk.SQLResult
+		if it.TmdbID > 0 {
+			files, err = query(
+				`SELECT f.id FROM streamline_video_files f
+				JOIN streamline_movies m ON m.id = f.movie_id
+				WHERE m.tmdb_id = ?`, it.TmdbID,
+			)
+		} else {
+			files, err = query(
+				`SELECT f.id FROM streamline_video_files f
+				JOIN streamline_episodes e ON e.id = f.episode_id
+				JOIN streamline_seasons se ON se.id = e.season_id
+				JOIN streamline_series s ON s.id = se.series_id
+				WHERE s.tvdb_id = ? AND se.number = ? AND e.number = ?`,
+				it.TvdbID, it.Season, it.Episode,
+			)
+		}
+		if err != nil {
+			return internalError("finding a title's files", err)
+		}
+		if len(files.Rows) == 0 {
+			unknownTitles++
+			continue
+		}
+		watched := it.Watched || it.Duration > 0 &&
+			float64(it.Position) >= watchedAt*float64(it.Duration)
+		position, duration := it.Position, it.Duration
+		if watched {
+			position, duration = 0, 0
+		}
+		for _, f := range files.Rows {
+			written, err := saveNewer(
+				userID, row(f).int(0), position, duration, watched, times[i],
+			)
+			if err != nil {
+				return internalError("saving imported watch state", err)
+			}
+			if written {
+				imported++
+			} else {
+				older++
+			}
+		}
+	}
+	return jsonOK(http.StatusOK, map[string]any{
+		"imported":       imported,
+		"older":          older,
+		"unknown_titles": unknownTitles,
+		"unknown_users":  unknownUsers,
+	})
 }

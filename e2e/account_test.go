@@ -284,4 +284,90 @@ var _ = Describe("account", Label("e2e"), Ordered, func() {
 		Expect(status).To(Equal(http.StatusBadRequest))
 		Expect(errorCode(raw)).To(Equal("invalid_request"))
 	})
+
+	It("imports watch state for other users, the newest winning", func() {
+		adminKey := stack.SignInApp(stack.Admin, "account-import-app")
+		viewer := stack.NewUser("imported")
+		viewerKey := stack.SignInApp(viewer, "imported-app")
+		var tmdb, tvdb, season, episode int64
+		Expect(stack.Core.QueryRow(
+			`SELECT m.tmdb_id FROM media_files f
+			JOIN movies m ON m.id = f.movie_media_files LIMIT 1`,
+		).Scan(&tmdb)).To(Succeed())
+		Expect(stack.Core.QueryRow(
+			`SELECT s.tvdb_id, se.number, e.number FROM media_files f
+			JOIN episodes e ON e.id = f.episode_media_files
+			JOIN seasons se ON se.id = e.season_episodes
+			JOIN tv_shows s ON s.id = se.tv_show_seasons LIMIT 1`,
+		).Scan(&tvdb, &season, &episode)).To(Succeed())
+
+		imp := func(k string, items ...map[string]any) (int, []byte) {
+			return call(
+				http.MethodPost, "/admin/watchstate/import", key(k),
+				map[string]any{"items": items},
+			)
+		}
+		at := "2020-01-02T03:04:05Z"
+		status, raw := imp(adminKey,
+			map[string]any{
+				"email": strings.ToUpper(viewer.Email), "tmdb_id": tmdb,
+				"watched": true, "at": at,
+			},
+			map[string]any{
+				"email": viewer.Email, "tvdb_id": tvdb, "season": season,
+				"episode": episode, "position_seconds": 60,
+				"duration_seconds": 600, "at": at,
+			},
+			map[string]any{
+				"email": viewer.Email, "tmdb_id": 987654321, "watched": true,
+				"at": at,
+			},
+			map[string]any{
+				"email": "nobody@example.net", "tmdb_id": tmdb, "watched": true,
+				"at": at,
+			},
+		)
+		Expect(status).To(Equal(http.StatusOK), string(raw))
+		var report struct {
+			Imported      int
+			Older         int
+			UnknownTitles int      `json:"unknown_titles"`
+			UnknownUsers  []string `json:"unknown_users"`
+		}
+		Expect(json.Unmarshal(raw, &report)).To(Succeed())
+		Expect(report.Imported).To(Equal(2))
+		Expect(report.UnknownTitles).To(Equal(1))
+		Expect(report.UnknownUsers).To(Equal([]string{"nobody@example.net"}))
+
+		var list struct {
+			Items []struct {
+				MovieID  *int64  `json:"movie_id"`
+				Watched  bool    `json:"watched"`
+				Position float64 `json:"position_seconds"`
+			}
+		}
+		getJSON("/watchstate", key(viewerKey), &list)
+		Expect(list.Items).To(HaveLen(2))
+		for _, it := range list.Items {
+			Expect(it.Watched).To(Equal(it.MovieID != nil))
+			if it.MovieID == nil {
+				Expect(it.Position).To(BeEquivalentTo(60))
+			}
+		}
+
+		status, raw = imp(adminKey, map[string]any{
+			"email": viewer.Email, "tmdb_id": tmdb, "watched": false,
+			"at": "2019-01-01T00:00:00Z",
+		})
+		Expect(status).To(Equal(http.StatusOK), string(raw))
+		Expect(json.Unmarshal(raw, &report)).To(Succeed())
+		Expect(report.Imported).To(BeZero())
+		Expect(report.Older).To(Equal(1))
+
+		status, _ = imp(viewerKey)
+		Expect(status).To(Equal(http.StatusForbidden))
+		status, raw = imp(adminKey, map[string]any{"email": viewer.Email})
+		Expect(status).To(Equal(http.StatusBadRequest))
+		Expect(errorCode(raw)).To(Equal("invalid_request"))
+	})
 })

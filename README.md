@@ -114,6 +114,25 @@ The e2e suite needs `ffmpeg` and `ffprobe` on `PATH`. The SDK is `github.com/dat
 
 `go run ./e2e/cmd/stack --library <json>` boots Streamline, the extension and the engine on a seeded library and prints one JSON line with the addresses and the admin login.
 
+## Importing watch state from Plex or Jellyfin
+
+`cmd/watch-import` copies what every user has watched (watched, resume position, last viewed) into the player, through `POST /admin/watchstate/import`. Give it `-plex`, `-jellyfin`, or both.
+
+```sh
+PLEX_TOKEN=… go run ./cmd/watch-import -plex http://plex.lan:32400 -dry-run
+JELLYFIN_TOKEN=… go run ./cmd/watch-import -jellyfin http://jellyfin.lan:8096 \
+  -user ana=ana@example.net -user ben=ben@example.net -dry-run
+PLEX_TOKEN=… PLAYER_TOKEN=… go run ./cmd/watch-import \
+  -plex http://plex.lan:32400 -player https://streamline.example.net/extensions/player
+```
+
+- `-dry-run` reads the servers and prints what each account has seen, and writes nothing.
+- `PLAYER_TOKEN` is an admin's access token (the `Authorization: Bearer` a signed-in web player sends).
+- Plex: `PLEX_TOKEN` is the server owner's token, which also gives each shared user's. An account lands on the Streamline user with the same email; a managed Plex user has no email and is skipped.
+- Jellyfin: `JELLYFIN_TOKEN` is an API key (Dashboard, API Keys). Jellyfin keeps no email, so name each user's Streamline email with `-user name=email`; a user whose name is already an email needs none, and any other is skipped.
+- A movie is found by its TMDB id, an episode by its series' TVDB id with season and episode numbers, so a library on other files than Streamline's still matches. The state lands on every file of the title.
+- It can be run again: a state older than what the player already holds is left alone.
+
 ## Contributing
 
 Bug reports and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
