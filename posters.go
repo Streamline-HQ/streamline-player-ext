@@ -37,6 +37,10 @@ func getPoster(c *call) sdk.Response {
 	if kind == "people" && file == "photo.jpg" {
 		file = "poster.jpg"
 	}
+	small := file == thumbFile
+	if small {
+		file = "poster.jpg"
+	}
 	folder, ok := c.R.Folder("artwork")
 	hostPath := path.Join(folder.HostPath, dir, id, file)
 	if n, err := strconv.ParseInt(id, 10, 64); file == backdropFile &&
@@ -51,8 +55,14 @@ func getPoster(c *call) sdk.Response {
 	if !ok {
 		return libraryNotFound()
 	}
-	if info, err := os.Stat(guest); err != nil || info.IsDir() {
+	info, err := os.Stat(guest)
+	if err != nil || info.IsDir() {
 		return libraryNotFound()
+	}
+	if small {
+		if thumb, ok := posterThumb(c, kind, id, guest, info); ok {
+			hostPath = thumb
+		}
 	}
 	return sdk.Response{
 		Headers: map[string][]string{

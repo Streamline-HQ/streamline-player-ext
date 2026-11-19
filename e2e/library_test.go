@@ -1,8 +1,11 @@
 package e2e
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"image"
+	"image/jpeg"
 	"net/http"
 	"net/url"
 	"os"
@@ -472,6 +475,66 @@ var _ = Describe("library reads", Label("e2e"), Ordered, func() {
 			Expect(resp.Header.Get("Content-Type")).To(Equal("image/jpeg"))
 			Expect(resp.Header.Get("Cache-Control")).
 				To(Equal("private, max-age=86400"))
+		})
+
+		Describe("card size", func() {
+			poster := func() string {
+				return filepath.Join(art, "movies", "5", "poster.jpg")
+			}
+			writeJPEG := func(file string, w, h int) {
+				GinkgoHelper()
+				Expect(os.MkdirAll(filepath.Dir(file), 0o755)).To(Succeed())
+				var buf bytes.Buffer
+				Expect(jpeg.Encode(
+					&buf, image.NewRGBA(image.Rect(0, 0, w, h)), nil,
+				)).To(Succeed())
+				Expect(os.WriteFile(file, buf.Bytes(), 0o644)).To(Succeed())
+			}
+			size := func() image.Point {
+				GinkgoHelper()
+				status, raw, err := stack.Call(
+					http.MethodGet, "/posters/movies/5/poster-w342.jpg", nil, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status).To(Equal(http.StatusOK))
+				cfg, err := jpeg.DecodeConfig(bytes.NewReader(raw))
+				Expect(err).NotTo(HaveOccurred())
+				return image.Pt(cfg.Width, cfg.Height)
+			}
+
+			BeforeEach(func() {
+				DeferCleanup(func() {
+					Expect(
+						os.RemoveAll(filepath.Join(art, "movies", "5")),
+					).To(Succeed())
+				})
+			})
+
+			It("shrinks a poster to a card's width", func() {
+				writeJPEG(poster(), 780, 1170)
+				Expect(size()).To(Equal(image.Pt(342, 513)))
+			})
+
+			It("follows a poster core replaced", func() {
+				writeJPEG(poster(), 780, 1170)
+				Expect(size()).To(Equal(image.Pt(342, 513)))
+				writeJPEG(poster(), 780, 780)
+				later := time.Now().Add(time.Minute)
+				Expect(os.Chtimes(poster(), later, later)).To(Succeed())
+				Expect(size()).To(Equal(image.Pt(342, 342)))
+			})
+
+			It("serves a poster no wider than a card as it is", func() {
+				writeJPEG(poster(), 185, 278)
+				Expect(size()).To(Equal(image.Pt(185, 278)))
+			})
+
+			It("serves the poster when it cannot be shrunk", func() {
+				status, raw, err := stack.Call(
+					http.MethodGet, "/posters/movies/1/poster-w342.jpg", nil, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status).To(Equal(http.StatusOK))
+				Expect(string(raw)).To(Equal("jpeg-bytes"))
+			})
 		})
 
 		It(
