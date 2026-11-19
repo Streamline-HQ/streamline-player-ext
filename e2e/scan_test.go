@@ -434,7 +434,7 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 			Expect(slices.Min(episodes)).To(BeNumerically(">", movies[0]))
 
 			// Three movie jobs finished half a minute apart, the last one just now,
-			// and three wait: 90 s.
+			// and three wait: 90 s. An episode's job waits behind them all: 120 s.
 			span := time.Minute
 			film := stack.Seeded.Movies[0]
 			extExec(`DELETE FROM job_ends`)
@@ -450,6 +450,10 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 						id, time.Now().Add(-span*time.Duration(2-i)/2).Unix())
 				}
 			}
+			extExec(
+				`INSERT INTO jobs(job_id, kind, path, state)
+			VALUES('eta-last', 'trickplay', ?, 'queued')`,
+				stack.Seeded.Episodes[0].Path)
 			extExec(
 				`INSERT INTO scan_state(id, cursor, scope, started_at, finished_at)
 			VALUES(1, ?, ?, ?, NULL) ON CONFLICT(id) DO UPDATE SET
@@ -480,9 +484,9 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 				progress[f.ID] = p
 				Expect(p).To(BeNumerically("<", 1), f.ID)
 				if f.ID == "series" {
-					Expect(
-						f.Scan.ETASeconds,
-					).To(BeZero(), "nothing of its own waits")
+					Expect(f.Scan.ETASeconds).To(
+						BeNumerically("~", 2*span.Seconds(), 4),
+						"its one job waits behind the movies' three")
 					continue
 				}
 				Expect(f.Scan.ETASeconds).To(

@@ -879,7 +879,7 @@ func adminLibrary(c *call) sdk.Response {
 			Count: row(counts.Rows[0]).int(0), Size: row(counts.Rows[0]).int(1),
 		}
 		if active {
-			progress, running, err := folderProgress(st, f.id)
+			progress, running, err := folderProgress(st, f.id, health.JobsRunning)
 			if err != nil {
 				return libraryFailed(err)
 			}
@@ -940,7 +940,9 @@ func scanActive(st scanState, reachable bool, owed *int64) bool {
 // last jobs to finish. The jobs count for the whole folder, not for the scope: a
 // change to one title starts a comparison of its own while the engine still
 // works through a full scan's jobs.
-func folderProgress(st scanState, folder string) (folderScan, bool, error) {
+func folderProgress(
+	st scanState, folder string, running map[string]float64,
+) (folderScan, bool, error) {
 	var compared, rows int64
 	// Only a comparison of the whole folder holds the progress back: one
 	// started for a title that changed has a row or two to compare, and
@@ -972,10 +974,52 @@ func folderProgress(st scanState, folder string) (folderScan, bool, error) {
 		return folderScan{}, false, err
 	}
 	waiting, jobs := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
+	// A season's intro job runs for ten minutes and more: counting only whole
+	// jobs left the scan looking stalled between two of them.
+	var partial, partialAhead float64
+	for id, done := range running {
+		res, err := query(
+			`SELECT `+owned+` FROM jobs WHERE job_id = ? AND state = ?`,
+			append(args, id, jobQueued)...)
+		if err != nil {
+			return folderScan{}, false, err
+		}
+		if len(res.Rows) == 0 {
+			continue
+		}
+		done = min(max(done, 0), 1)
+		partialAhead += done
+		if row(res.Rows[0]).int(0) != 0 {
+			partial += done
+		}
+	}
+	// The engine has one queue for every folder: all the analyses, then the
+	// rest as it was submitted, which is the order of the rows here. A
+	// folder is done when its last job is, so its time left is that of every
+	// job up to that one, whoever's: its own alone promised minutes to a
+	// folder whose last jobs sat at the far end of another's day of work.
+	var ahead int64
+	res, err = query(
+		`SELECT kind != 'analyze', rowid FROM jobs WHERE state = ? AND `+owned+`
+		ORDER BY 1 DESC, 2 DESC LIMIT 1`,
+		append([]any{jobQueued}, args...)...)
+	if err != nil {
+		return folderScan{}, false, err
+	}
+	if len(res.Rows) > 0 {
+		late, last := row(res.Rows[0]).int(0), row(res.Rows[0]).int(1)
+		res, err = query(
+			`SELECT count(*) FROM jobs WHERE state = ? AND (
+				(kind != 'analyze') < ? OR
+				((kind != 'analyze') = ? AND rowid <= ?))`,
+			jobQueued, late, late, last)
+		if err != nil {
+			return folderScan{}, false, err
+		}
+		ahead = row(res.Rows[0]).int(0)
+	}
 	// The comparison takes minutes where the jobs take hours, so the time
-	// left is the jobs' alone. The pace is the engine's over every folder:
-	// it works through one queue, so a folder whose jobs all wait behind
-	// another's would otherwise have no pace of its own to go by.
+	// left is the jobs' alone, at the engine's pace over every folder.
 	res, err = query(
 		`SELECT count(*), ifnull(min(at), 0), ifnull(max(at), 0) FROM (
 			SELECT at FROM job_ends ORDER BY at DESC LIMIT ?)`, etaSample)
@@ -984,11 +1028,11 @@ func folderProgress(st scanState, folder string) (folderScan, bool, error) {
 	}
 	r := row(res.Rows[0])
 	oldest, newest := time.Unix(r.int(1), 0), time.Unix(r.int(2), 0)
-	p := scan.Progress(compared, rows, waiting, jobs)
+	p := scan.Progress(compared, rows, waiting, jobs, partial)
 	return folderScan{
 		Progress: math.Round(p*1000) / 1000,
 		ETASeconds: scan.ETASeconds(
-			waiting, r.int(0), newest.Sub(oldest), now().Sub(newest)),
+			ahead, r.int(0), newest.Sub(oldest), now().Sub(newest), partialAhead),
 	}, comparing || waiting > 0, nil
 }
 

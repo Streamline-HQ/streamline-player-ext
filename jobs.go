@@ -349,6 +349,8 @@ type engineState struct {
 	// post the result of. Nil while it is still reading its queue back after
 	// a restart, and from an engine that does not report it.
 	JobsOwed *int64 `json:"jobs_owed"`
+	// JobsRunning is how far each job the engine is on says it is, 0 to 1.
+	JobsRunning map[string]float64 `json:"jobs_running"`
 }
 
 func readEngineState() (engineState, bool) {
