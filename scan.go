@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -30,6 +29,15 @@ func init() {
 		`CREATE INDEX IF NOT EXISTS seen_movie ON seen(movie_id)`,
 		`CREATE INDEX IF NOT EXISTS seen_episode ON seen(episode_id)`,
 		`CREATE INDEX IF NOT EXISTS seen_path ON seen(path)`,
+		`CREATE TABLE IF NOT EXISTS seen_quality(
+			video_file_id INTEGER PRIMARY KEY,
+			quality TEXT,
+			height INTEGER,
+			video_codec TEXT,
+			dynamic_range TEXT,
+			audio_codec TEXT,
+			channels INTEGER
+		)`,
 		`CREATE TABLE IF NOT EXISTS scan_state(
 			id INTEGER PRIMARY KEY CHECK (id = 1),
 			cursor INTEGER NOT NULL,
@@ -62,11 +70,9 @@ const (
 )
 
 // libraryEvent is what a comparison tells the activity feed: a file that
-// arrived, one that replaced Previous, or one that went with nothing in its
-// place.
+// arrived, or one that replaced Previous.
 type libraryEvent struct {
 	Replaced bool
-	Gone     bool
 	File     scan.File
 	Previous *scan.Seen
 }
@@ -505,6 +511,20 @@ func comparePage(st *scanState, q *jobQueue) (last bool, err error) {
 	if err := apply(st, changes, accepted); err != nil {
 		return false, err
 	}
+	// After apply: an upgrade's event describes the file that went from what
+	// the comparison before this one kept.
+	if err := exec(
+		`INSERT INTO seen_quality(video_file_id, `+qualityColumns+`)
+		SELECT id, `+qualityColumns+` FROM streamline_video_files
+		WHERE id > ? AND id <= ? AND NOT missing AND `+cond+`
+		ON CONFLICT(video_file_id) DO UPDATE SET quality = excluded.quality,
+			height = excluded.height, video_codec = excluded.video_codec,
+			dynamic_range = excluded.dynamic_range,
+			audio_codec = excluded.audio_codec, channels = excluded.channels`,
+		append([]any{st.cursor, hi}, scopeArgs...)...,
+	); err != nil {
+		return false, err
+	}
 	st.cursor = hi
 	if !last {
 		st.cursor = page[len(page)-1].ID
@@ -730,16 +750,10 @@ func apply(
 		return err
 	}
 	var events []libraryEvent
-	// A file that goes and is replaced in the same comparison is an upgrade, not
-	// a removal: the replacement takes it back out.
-	gone := map[int64]scan.File{}
 	for _, c := range changes {
 		f := c.File
 		switch c.Kind {
 		case scan.Gone:
-			if !baseline {
-				gone[f.ID] = f
-			}
 			err = exec(
 				`UPDATE seen SET gone_at = ? WHERE video_file_id = ?`,
 				at,
@@ -750,7 +764,6 @@ func apply(
 			}
 		case scan.New, scan.Replaced:
 			if c.Previous != nil {
-				delete(gone, c.Previous.ID)
 				err = dropDerived(c.Previous.Path, c.Previous.ID)
 			}
 			if err == nil {
@@ -787,9 +800,6 @@ func apply(
 	}
 	if err = recordJobs(queued); err != nil {
 		return err
-	}
-	for _, id := range slices.Sorted(maps.Keys(gone)) {
-		events = append(events, libraryEvent{Gone: true, File: gone[id]})
 	}
 	for _, e := range events {
 		addEvent(e)

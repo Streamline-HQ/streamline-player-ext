@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/datahearth/streamline/extensions/sdk"
+	"github.com/streamline-hq/streamline-player-ext/scan"
 )
 
 const (
@@ -32,6 +33,9 @@ func init() {
 			body TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS activity_at ON activity(at, seq)`,
+		// The feed no longer has removals; the ones recorded before would
+		// reach apps that do not know the kind.
+		`DELETE FROM activity WHERE kind = 'removed'`,
 		`CREATE TABLE IF NOT EXISTS activity_reads(
 			user_id INTEGER NOT NULL,
 			seq INTEGER NOT NULL,
@@ -146,35 +150,19 @@ func titleRef(movieID, episodeID int64) (title, extra map[string]any, ok bool) {
 		map[string]any{"season": season, "episodes": []int64{number}}, true
 }
 
-func titleName(title map[string]any) string {
-	table := "streamline_movies"
-	if title["kind"] == "series" {
-		table = "streamline_series"
-	}
-	res, err := query(`SELECT title FROM `+table+` WHERE id = ?`, title["id"])
-	if err != nil || len(res.Rows) == 0 {
-		return ""
-	}
-	return row(res.Rows[0]).str(0)
-}
+const qualityColumns = `quality, height, video_codec, dynamic_range, audio_codec,
+	channels`
 
-func fileSummaryOf(fileID int64) map[string]any {
-	res, err := query(
-		`SELECT size, quality, height, video_codec, dynamic_range, audio_codec,
-			channels FROM streamline_video_files WHERE id = ?`, fileID,
-	)
-	out := map[string]any{}
-	if err != nil || len(res.Rows) == 0 {
-		return out
-	}
-	r := row(res.Rows[0])
-	out["size"] = r.int(0)
+// qualitySummary is a file as the feed describes it, from its size and a row
+// of qualityColumns.
+func qualitySummary(size int64, r row) map[string]any {
+	out := map[string]any{"size": size}
 	for key, v := range map[string]string{
-		"resolution": libResolution(r.str(1), r.int(2)),
-		"codec":      r.str(3),
-		"hdr":        libHDR(r.str(4)),
-		"audio":      r.str(5),
-		"channels":   libChannels(r.int(6)),
+		"resolution": libResolution(r.str(0), r.int(1)),
+		"codec":      r.str(2),
+		"hdr":        libHDR(r.str(3)),
+		"audio":      r.str(4),
+		"channels":   libChannels(r.int(5)),
 	} {
 		if v != "" {
 			out[key] = v
@@ -183,8 +171,33 @@ func fileSummaryOf(fileID int64) map[string]any {
 	return out
 }
 
+func fileSummaryOf(fileID int64) map[string]any {
+	res, err := query(
+		`SELECT size, `+qualityColumns+` FROM streamline_video_files
+		WHERE id = ?`, fileID,
+	)
+	if err != nil || len(res.Rows) == 0 {
+		return map[string]any{}
+	}
+	r := row(res.Rows[0])
+	return qualitySummary(r.int(0), r[1:])
+}
+
+// previousSummaryOf describes a file that is no longer in the library, or no
+// longer the same file, from what the last comparison kept of it.
+func previousSummaryOf(p *scan.Seen) map[string]any {
+	res, err := query(
+		`SELECT `+qualityColumns+` FROM seen_quality WHERE video_file_id = ?`,
+		p.ID,
+	)
+	if err != nil || len(res.Rows) == 0 {
+		return map[string]any{"size": p.Size}
+	}
+	return qualitySummary(p.Size, row(res.Rows[0]))
+}
+
 // recordLibraryEvent turns what a comparison found into the feed's entries: a
-// file that arrived, one that replaced another, or one that was removed.
+// file that arrived, or one that replaced another.
 func recordLibraryEvent(e libraryEvent) {
 	title, place, ok := titleRef(e.File.MovieID, e.File.EpisodeID)
 	if !ok {
@@ -192,22 +205,13 @@ func recordLibraryEvent(e libraryEvent) {
 	}
 	var err error
 	switch {
-	case e.Gone:
-		// The title may leave the library with its last file, so the event
-		// carries the name the row shows.
-		body := map[string]any{
-			"title": title, "name": titleName(title),
-			"previous": map[string]any{"size": e.File.Size},
-		}
-		maps.Copy(body, place)
-		err = insertEvent("removed", nil, body)
 	case e.Replaced:
 		body := map[string]any{
 			"title": title, "file": fileSummaryOf(e.File.ID),
 			"previous": map[string]any{},
 		}
 		if e.Previous != nil {
-			body["previous"] = map[string]any{"size": e.Previous.Size}
+			body["previous"] = previousSummaryOf(e.Previous)
 		}
 		maps.Copy(body, place)
 		err = insertEvent("upgrade", nil, body)

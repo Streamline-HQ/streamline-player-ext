@@ -19,9 +19,13 @@ type activityItem struct {
 		ID   int64  `json:"id"`
 	} `json:"title"`
 	File *struct {
-		Size int64 `json:"size"`
+		Size       int64  `json:"size"`
+		Resolution string `json:"resolution"`
 	} `json:"file"`
-	Name     string  `json:"name"`
+	Previous *struct {
+		Size       int64  `json:"size"`
+		Resolution string `json:"resolution"`
+	} `json:"previous"`
 	Episodes []int64 `json:"episodes"`
 	Device   *struct {
 		Name     string `json:"name"`
@@ -135,30 +139,38 @@ var _ = Describe("activity", Label("e2e"), Ordered, func() {
 		}
 	})
 
-	It("a file that goes with nothing in its place is a removal, named", func() {
+	It("an upgrade names the resolution of the file it replaced", func() {
 		film := stack.Seeded.Movies[0]
-		extra, extraID := addFilmFile(film.Path, film.FileID, "activity-removed.mkv")
+		old, oldID := addFilmFile(film.Path, film.FileID, "activity-old.mkv")
 		startScan(map[string]string{"folder_id": "movies"})
 		waitScanned()
 		before := activityIDs(activityOf(key(k)))
 
-		_, err := stack.Core.Exec(`DELETE FROM media_files WHERE id = ?`, extraID)
+		_, err := stack.Core.Exec(`DELETE FROM media_files WHERE id = ?`, oldID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(os.Remove(extra)).To(Succeed())
+		Expect(os.Remove(old)).To(Succeed())
+		_, betterID := addFilmFile(film.Path, film.FileID, "activity-better.mkv")
+		_, err = stack.Core.Exec(
+			`UPDATE media_files SET quality = '720p', height = 720 WHERE id = ?`,
+			betterID,
+		)
+		Expect(err).NotTo(HaveOccurred())
 		startScan(map[string]string{"folder_id": "movies"})
 		waitScanned()
 
-		var removed *activityItem
+		var upgrade *activityItem
 		for _, it := range activityOf(key(k)) {
-			if !before[it.ID] && it.Kind == "removed" {
-				removed = &it
+			if !before[it.ID] && it.Kind == "upgrade" {
+				upgrade = &it
 				break
 			}
 		}
-		Expect(removed).NotTo(BeNil(), scanDump())
-		Expect(removed.Title).NotTo(BeNil())
-		Expect(removed.Title.ID).To(Equal(film.OwnerID))
-		Expect(removed.Name).NotTo(BeEmpty())
+		Expect(upgrade).NotTo(BeNil(), scanDump())
+		Expect(upgrade.File).NotTo(BeNil())
+		Expect(upgrade.File.Resolution).To(Equal("720p"))
+		Expect(upgrade.Previous).NotTo(BeNil())
+		Expect(upgrade.Previous.Resolution).To(Equal("360p"))
+		Expect(upgrade.Previous.Size).To(BeNumerically(">", 0))
 	})
 
 	It("merges the episodes of a season that lands together", func() {
