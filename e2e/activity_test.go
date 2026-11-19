@@ -21,11 +21,40 @@ type activityItem struct {
 	File *struct {
 		Size int64 `json:"size"`
 	} `json:"file"`
+	Name     string  `json:"name"`
 	Episodes []int64 `json:"episodes"`
 	Device   *struct {
 		Name     string `json:"name"`
 		Platform string `json:"platform"`
 	} `json:"device"`
+}
+
+// addFilmFile gives a film a second file: a hard link of its own, recorded in
+// core as the first is. Both go when the spec ends.
+func addFilmFile(path string, fileID int64, name string) (extra string, id int64) {
+	GinkgoHelper()
+	extra = filepath.Join(filepath.Dir(path), name)
+	Expect(os.Link(path, extra)).To(Succeed())
+	// RemoveAll: a spec may have deleted it already.
+	DeferCleanup(os.RemoveAll, extra)
+	res, err := stack.Core.Exec(
+		`INSERT INTO media_files(create_time, update_time, path, size, quality,
+			format, source, container, duration_seconds, video_codec, width,
+			height, audio_codec, audio_channels, bitrate, audio_tracks,
+			audio_langs, sub_langs, probed_at, bit_depth, tag_failures, movie_media_files)
+		SELECT create_time, update_time, ?, size, quality, format, source,
+			container, duration_seconds, video_codec, width, height,
+			audio_codec, audio_channels, bitrate, audio_tracks, audio_langs,
+			sub_langs, probed_at, bit_depth, tag_failures, movie_media_files
+		FROM media_files WHERE id = ?`, extra, fileID)
+	Expect(err).NotTo(HaveOccurred())
+	id, err = res.LastInsertId()
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() {
+		_, err := stack.Core.Exec(`DELETE FROM media_files WHERE id = ?`, id)
+		Expect(err).NotTo(HaveOccurred())
+	})
+	return extra, id
 }
 
 func activityOf(headers map[string]string) []activityItem {
@@ -72,25 +101,7 @@ var _ = Describe("activity", Label("e2e"), Ordered, func() {
 	It("a scan's new film appears in activity, and read marks it", func() {
 		before := activityIDs(activityOf(key(k)))
 		film := stack.Seeded.Movies[0]
-		extra := filepath.Join(filepath.Dir(film.Path), "activity-extra.mkv")
-		Expect(os.Link(film.Path, extra)).To(Succeed())
-		DeferCleanup(os.Remove, extra)
-		res, err := stack.Core.Exec(
-			`INSERT INTO media_files(create_time, update_time, path, size, quality,
-				format, source, container, duration_seconds, video_codec, width,
-				height, audio_codec, audio_channels, bitrate, audio_tracks,
-				audio_langs, sub_langs, probed_at, bit_depth, tag_failures, movie_media_files)
-			SELECT create_time, update_time, ?, size, quality, format, source,
-				container, duration_seconds, video_codec, width, height,
-				audio_codec, audio_channels, bitrate, audio_tracks, audio_langs,
-				sub_langs, probed_at, bit_depth, tag_failures, movie_media_files
-			FROM media_files WHERE id = ?`, extra, film.FileID)
-		Expect(err).NotTo(HaveOccurred())
-		extraID, err := res.LastInsertId()
-		Expect(err).NotTo(HaveOccurred())
-		DeferCleanup(func() {
-			_, _ = stack.Core.Exec(`DELETE FROM media_files WHERE id = ?`, extraID)
-		})
+		addFilmFile(film.Path, film.FileID, "activity-extra.mkv")
 
 		startScan(map[string]string{"folder_id": "movies"})
 		waitScanned()
@@ -122,6 +133,32 @@ var _ = Describe("activity", Label("e2e"), Ordered, func() {
 				Expect(it.Read).To(BeFalse(), "read state is per user")
 			}
 		}
+	})
+
+	It("a file that goes with nothing in its place is a removal, named", func() {
+		film := stack.Seeded.Movies[0]
+		extra, extraID := addFilmFile(film.Path, film.FileID, "activity-removed.mkv")
+		startScan(map[string]string{"folder_id": "movies"})
+		waitScanned()
+		before := activityIDs(activityOf(key(k)))
+
+		_, err := stack.Core.Exec(`DELETE FROM media_files WHERE id = ?`, extraID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.Remove(extra)).To(Succeed())
+		startScan(map[string]string{"folder_id": "movies"})
+		waitScanned()
+
+		var removed *activityItem
+		for _, it := range activityOf(key(k)) {
+			if !before[it.ID] && it.Kind == "removed" {
+				removed = &it
+				break
+			}
+		}
+		Expect(removed).NotTo(BeNil(), scanDump())
+		Expect(removed.Title).NotTo(BeNil())
+		Expect(removed.Title.ID).To(Equal(film.OwnerID))
+		Expect(removed.Name).NotTo(BeEmpty())
 	})
 
 	It("merges the episodes of a season that lands together", func() {

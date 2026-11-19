@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -61,9 +62,11 @@ const (
 )
 
 // libraryEvent is what a comparison tells the activity feed: a file that
-// arrived, or one that replaced Previous.
+// arrived, one that replaced Previous, or one that went with nothing in its
+// place.
 type libraryEvent struct {
 	Replaced bool
+	Gone     bool
 	File     scan.File
 	Previous *scan.Seen
 }
@@ -727,10 +730,16 @@ func apply(
 		return err
 	}
 	var events []libraryEvent
+	// A file that goes and is replaced in the same comparison is an upgrade, not
+	// a removal: the replacement takes it back out.
+	gone := map[int64]scan.File{}
 	for _, c := range changes {
 		f := c.File
 		switch c.Kind {
 		case scan.Gone:
+			if !baseline {
+				gone[f.ID] = f
+			}
 			err = exec(
 				`UPDATE seen SET gone_at = ? WHERE video_file_id = ?`,
 				at,
@@ -741,6 +750,7 @@ func apply(
 			}
 		case scan.New, scan.Replaced:
 			if c.Previous != nil {
+				delete(gone, c.Previous.ID)
 				err = dropDerived(c.Previous.Path, c.Previous.ID)
 			}
 			if err == nil {
@@ -777,6 +787,9 @@ func apply(
 	}
 	if err = recordJobs(queued); err != nil {
 		return err
+	}
+	for _, id := range slices.Sorted(maps.Keys(gone)) {
+		events = append(events, libraryEvent{Gone: true, File: gone[id]})
 	}
 	for _, e := range events {
 		addEvent(e)

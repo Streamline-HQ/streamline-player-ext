@@ -146,6 +146,18 @@ func titleRef(movieID, episodeID int64) (title, extra map[string]any, ok bool) {
 		map[string]any{"season": season, "episodes": []int64{number}}, true
 }
 
+func titleName(title map[string]any) string {
+	table := "streamline_movies"
+	if title["kind"] == "series" {
+		table = "streamline_series"
+	}
+	res, err := query(`SELECT title FROM `+table+` WHERE id = ?`, title["id"])
+	if err != nil || len(res.Rows) == 0 {
+		return ""
+	}
+	return row(res.Rows[0]).str(0)
+}
+
 func fileSummaryOf(fileID int64) map[string]any {
 	res, err := query(
 		`SELECT size, quality, height, video_codec, dynamic_range, audio_codec,
@@ -172,7 +184,7 @@ func fileSummaryOf(fileID int64) map[string]any {
 }
 
 // recordLibraryEvent turns what a comparison found into the feed's entries: a
-// file that arrived, or one that replaced another.
+// file that arrived, one that replaced another, or one that was removed.
 func recordLibraryEvent(e libraryEvent) {
 	title, place, ok := titleRef(e.File.MovieID, e.File.EpisodeID)
 	if !ok {
@@ -180,6 +192,15 @@ func recordLibraryEvent(e libraryEvent) {
 	}
 	var err error
 	switch {
+	case e.Gone:
+		// The title may leave the library with its last file, so the event
+		// carries the name the row shows.
+		body := map[string]any{
+			"title": title, "name": titleName(title),
+			"previous": map[string]any{"size": e.File.Size},
+		}
+		maps.Copy(body, place)
+		err = insertEvent("removed", nil, body)
 	case e.Replaced:
 		body := map[string]any{
 			"title": title, "file": fileSummaryOf(e.File.ID),
