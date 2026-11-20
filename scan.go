@@ -533,7 +533,11 @@ func comparePage(st *scanState, q *jobQueue) (last bool, err error) {
 }
 
 // seenWindow is the record's rows for the page's id window, plus the rows of
-// the page's owners that went away earlier, which a replacement names.
+// the page's owners that went away, which a replacement names: the ones the
+// record already holds as gone, and the ones it still holds as live that the
+// view no longer carries. Those lie behind the cursor when a replacement
+// lands during a full comparison, which absorbs the hook's ids and never
+// reaches them again.
 func seenWindow(
 	st *scanState, cond string, scopeArgs []any, hi int64, page []scan.File,
 ) ([]scan.Seen, error) {
@@ -571,7 +575,9 @@ func seenWindow(
 			continue
 		}
 		res, err := query(
-			`SELECT `+seenColumns+` FROM seen WHERE gone_at IS NOT NULL
+			`SELECT `+seenColumns+` FROM seen s WHERE (gone_at IS NOT NULL
+				OR NOT EXISTS (SELECT 1 FROM streamline_video_files f
+					WHERE f.id = s.video_file_id AND f.missing = 0))
 			AND `+o.col+` IN (`+placeholders(len(o.ids))+`)`, o.ids...)
 		if err != nil {
 			return nil, err

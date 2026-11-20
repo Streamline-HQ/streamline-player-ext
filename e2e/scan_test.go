@@ -720,4 +720,87 @@ var _ = Describe("library comparison", Label("e2e"), Ordered, func() {
 		Expect(status).To(Equal(http.StatusOK))
 		Expect(state).To(Equal("done"))
 	})
+
+	It("names the replacement of a file a running full scan already passed", func() {
+		old := stack.Seeded.Movies[len(stack.Seeded.Movies)-1]
+		startScan(map[string]string{})
+		waitScanned()
+		Eventually(storedAnalyses, time.Minute, 250*time.Millisecond).
+			Should(HaveKey(old.Path), scanDump)
+		var passed int64
+		Expect(stack.Core.QueryRow(`SELECT max(id) FROM media_files`).
+			Scan(&passed)).To(Succeed())
+		extExec(
+			`UPDATE scan_state SET cursor = ?, scope = '{"full":["movies","series"]}',
+				started_at = ?, finished_at = NULL, added = 0, replaced = 0,
+				errors = 0
+			WHERE id = 1`,
+			passed,
+			time.Now().Unix(),
+		)
+		extExec(
+			`INSERT INTO meta(key, value) VALUES('scan_lease', ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10),
+		)
+
+		// What an import's ReplaceMediaFile writes: a new row, the old one gone.
+		raw, err := os.ReadFile(old.Path)
+		Expect(err).NotTo(HaveOccurred())
+		fresh := filepath.Join(filepath.Dir(old.Path), "behind-cursor.mkv")
+		Expect(os.WriteFile(fresh, raw, 0o644)).To(Succeed())
+		Expect(os.Remove(old.Path)).To(Succeed())
+		var cols []string
+		rows, err := stack.Core.Query(
+			`SELECT name FROM pragma_table_info('media_files') WHERE name != 'id'`,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		for rows.Next() {
+			var c string
+			Expect(rows.Scan(&c)).To(Succeed())
+			cols = append(cols, c)
+		}
+		Expect(rows.Close()).To(Succeed())
+		sel := slices.Clone(cols)
+		sel[slices.Index(sel, "path")] = "?"
+		res, err := stack.Core.Exec(
+			`INSERT INTO media_files(`+strings.Join(cols, ", ")+`)
+			SELECT `+strings.Join(sel, ", ")+` FROM media_files WHERE id = ?`,
+			fresh, old.FileID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		newID, err := res.LastInsertId()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(newID).To(BeNumerically(">", passed))
+		_, err = stack.Core.Exec(`DELETE FROM media_files WHERE id = ?`, old.FileID)
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() {
+			extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
+			Expect(os.Rename(fresh, old.Path)).To(Succeed())
+			_, err := stack.Core.Exec(
+				`UPDATE media_files SET id = ?, path = ? WHERE id = ?`,
+				old.FileID, old.Path, newID,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			startScan(nil)
+			waitScanned()
+		})
+
+		extExec(`UPDATE meta SET value = '0' WHERE key = 'scan_lease'`)
+		startScan(nil)
+		lib := waitScanned()
+		Expect(lib.LastScan.Replaced).To(Equal(1), scanDump)
+		Expect(lib.LastScan.Added).To(BeZero(), scanDump)
+
+		db := stack.Ext()
+		var gone sql.NullInt64
+		Expect(db.QueryRow(
+			`SELECT gone_at FROM seen WHERE video_file_id = ?`, old.FileID,
+		).Scan(&gone)).To(Succeed())
+		Expect(db.Close()).To(Succeed())
+		Expect(gone.Valid).To(BeTrue(), "the old file is no longer held as live")
+		Eventually(storedAnalyses, time.Minute, 250*time.Millisecond).Should(
+			And(HaveKey(fresh), Not(HaveKey(old.Path))), scanDump,
+		)
+	})
 })
