@@ -98,6 +98,7 @@
               deadnix
               config.treefmt.build.wrapper
               jq
+              git-cliff
               # headless: the end-to-end suite drives ffmpeg and ffprobe.
               ffmpeg-headless
             ];

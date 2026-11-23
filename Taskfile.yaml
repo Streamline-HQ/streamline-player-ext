@@ -66,3 +66,56 @@ tasks:
     cmds:
       - task: test:unit
       - task: test:e2e
+
+  # The same procedure as Streamline's release:app: one revision cut from a
+  # fresh main@origin (never from @, which would seal the working copy into the
+  # release), the version and the changelog edited inside it, main moved onto
+  # it. jj snapshots the edits on the bookmark move.
+  release:changelog:
+    desc: Set VERSION in main.go, regenerate CHANGELOG.md, commit both and advance main. Usage - task release:changelog VERSION=0.7.0
+    requires:
+      vars: [VERSION]
+    vars:
+      V: '{{trimPrefix "v" .VERSION}}'
+    preconditions:
+      - &semver
+        sh: 'echo "{{.V}}" | grep -qE "^[0-9]+\.[0-9]+\.[0-9]+"'
+        msg: "VERSION must look like 0.7.0 or 0.7.0-alpha.1 (a leading v is accepted and stripped)"
+    cmds:
+      - jj git fetch --remote origin
+      - 'jj new main@origin -m "docs(changelog): v{{.V}}"'
+      - sed -i 's/^const version = ".*"$/const version = "{{.V}}"/' main.go
+      - git-cliff --tag v{{.V}} -o CHANGELOG.md
+      - jj bookmark set main -r @
+
+  release:tag:
+    desc: Tag main v<VERSION> and push both, triggering .github/workflows/release.yaml. Usage - task release:tag VERSION=0.7.0
+    requires:
+      vars: [VERSION]
+    vars:
+      V: '{{trimPrefix "v" .VERSION}}'
+    preconditions:
+      - *semver
+      # jj tag list prints nothing on stdout for a name it doesn't have.
+      - sh: '[ -z "$(jj tag list v{{.V}} 2>/dev/null)" ]'
+        msg: "v{{.V}} already exists"
+      # Read main, not the working copy: CI builds from the tag.
+      - sh: 'jj file show -r main CHANGELOG.md 2>/dev/null | grep -q "^## \[{{.V}}\]"'
+        msg: "main has no CHANGELOG.md section for {{.V}} — run: task release:changelog VERSION={{.V}}"
+      - sh: 'jj file show -r main main.go | grep -q "^const version = \"{{.V}}\"$"'
+        msg: "main's main.go is not at {{.V}} — run: task release:changelog VERSION={{.V}}"
+    cmds:
+      - jj tag set v{{.V}} -r main
+      # main goes in the same push: a tag pushed alone leaves main local, and
+      # the next renovate merge makes it conflicted on fetch.
+      - jj git push --remote origin -b main --tag v{{.V}}
+
+  release:
+    desc: Cut a release end to end — changelog, commit, advance main, tag and push. Run the halves apart to read the changelog first. Usage - task release VERSION=0.7.0
+    requires:
+      vars: [VERSION]
+    cmds:
+      - task: release:changelog
+        vars: {VERSION: "{{.VERSION}}"}
+      - task: release:tag
+        vars: {VERSION: "{{.VERSION}}"}
